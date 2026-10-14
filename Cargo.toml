@@ -1,0 +1,6 @@
+[workspace]
+resolver = "3"
+members = ["kernel", "app"]
+
+[profile.release]
+debug = true

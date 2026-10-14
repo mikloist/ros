@@ -1,0 +1,11 @@
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "probe-rs run --chip RP235x"
+
+[build]
+target = "thumbv8m.main-none-eabihf"
+
+[alias]
+ktest = "test -p kernel --target x86_64-unknown-linux-gnu"
+
+[env]
+DEFMT_LOG = "debug"

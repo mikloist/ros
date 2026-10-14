@@ -39,21 +39,18 @@
   - `app::exit_ok() -> !`
   - `cargo ktest` alias = host tests for `kernel`
 
-- [ ] **Step 1: Commit the existing Embassy blinky as a baseline**
+- [ ] **Step 1: Remove the Embassy code (not kept; no baseline commit)**
 
 ```bash
-git add -A
-git commit -m "chore: baseline Embassy blinky before RTOS restructure"
+rm -rf src build.rs Cargo.lock target
 ```
 
-- [ ] **Step 2: Move and delete files**
+- [ ] **Step 2: Move board files into `app/`**
 
 ```bash
 mkdir -p app/src/bin kernel/src
-git mv memory.x app/memory.x
-git mv cyw43-firmware app/cyw43-firmware
-git rm -q src/main.rs build.rs
-rm Cargo.lock
+mv memory.x app/memory.x
+mv cyw43-firmware app/cyw43-firmware
 ```
 
 - [ ] **Step 3: Write workspace `Cargo.toml`**
