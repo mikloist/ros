@@ -1,0 +1,5 @@
+# .cargo/config.toml builds everything for the Pico (thumbv8m, no std). The
+# kernel's unit tests only build on the host (`cargo ktest`), so checking
+# `--all-targets` for the Pico reports hundreds of bogus errors in test code.
+[check]
+allTargets = false
