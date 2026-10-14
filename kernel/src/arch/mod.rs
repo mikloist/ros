@@ -19,7 +19,7 @@ static mut DUMMY: [u32; 32] = [0; 32];
 
 /// Runs `f` on the scheduler with interrupts masked (PRIMASK), so SysTick
 /// cannot touch it halfway through. Every access to `SCHED` goes through here.
-fn with_sched<R>(f: impl FnOnce(&mut Sched) -> R) -> R {
+pub(crate) fn with_sched<R>(f: impl FnOnce(&mut Sched) -> R) -> R {
     cortex_m::interrupt::free(|_| {
         let s = unsafe { &mut *(&raw mut SCHED) };
         return f(s);

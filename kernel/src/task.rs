@@ -103,6 +103,10 @@ impl Task {
             current_priority: prio,
             original_priority: prio,
             wake: 0,
+                waiting_on: core::ptr::null_mut(),
+                wait_next: core::ptr::null_mut(),
+                timed_out: false,
+                msg: core::ptr::null_mut(),
             next: core::ptr::null_mut(),
             name: "t",
         }
