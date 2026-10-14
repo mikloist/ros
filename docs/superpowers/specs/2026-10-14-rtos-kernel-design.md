@@ -57,7 +57,7 @@ pub struct Task {
 }
 ```
 
-- App declares tasks as statics: `Stack<N>` (`#[repr(align(32))]`) + `fn() -> !` entry. `kernel::start(&mut [&mut Task]) -> !`.
+- App declares stacks as statics (`Stack<N>`, `#[repr(align(32))]`) and builds `Task::new(name, entry: fn() -> !, &STACK)` values in `main`. `kernel::start(&mut [Task]) -> !`.
 - 8 priorities, higher = more urgent. Priority 0 reserved for the idle task; apps use 1–7. Ready set = `u8` bitmap + per-priority list; highest via CLZ.
 - PendSV (asm, lowest exception priority):
   1. Hardware has stacked R0–R3, R12, LR, PC, xPSR (+ S0–S15, FPSCR if FP active; lazy stacking).
