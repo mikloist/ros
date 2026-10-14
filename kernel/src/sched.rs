@@ -11,7 +11,6 @@ use crate::task::{State, Task};
 
 pub(crate) const PRIOS: usize = 8;
 
-/// FIFO of tasks linked through `Task::next`.
 #[derive(Clone, Copy)]
 struct List {
     head: *mut Task,

@@ -28,7 +28,6 @@ ros/
 │     │  └─ mpu.rs
 │     ├─ task.rs
 │     ├─ sched.rs
-│     ├─ time.rs
 │     ├─ sync.rs
 │     └─ syscall.rs
 └─ app/                bin; board init, task table, demos
@@ -46,18 +45,20 @@ ros/
 
 ```rust
 pub struct Task {
-    sp: *mut u32,          // saved PSP
-    stack_limit: *mut u32, // PSPLIM
-    prio: u8,              // effective (may be inherited)
-    base_prio: u8,
-    privileged: bool,      // level 4: applied to CONTROL.nPRIV on switch
-    state: State,          // Ready | Running | Sleeping(wake_tick) | Blocked | Dead
-    next: *mut Task,       // ready/wait list link
+    sp: *mut u32,              // saved PSP
+    stack_limit: *mut u32,     // PSPLIM
+    state: State,              // Ready | Running | Sleeping (M3: Blocked, M5: Dead)
+    current_priority: u8,      // effective (M4 inheritance may raise it)
+    original_priority: u8,     // declared priority; M4 restores to it
+    wake: u64,                 // wake tick while Sleeping
+    next: *mut Task,           // link in the one list the task is in
     name: &'static str,
+    // M5: privileged: bool, applied to CONTROL.nPRIV on switch
 }
 ```
 
-- App declares stacks as statics (`Stack<N>`, `#[repr(align(32))]`) and builds `Task::new(name, entry: fn() -> !, &STACK)` values in `main`. `kernel::start(&mut [Task]) -> !`.
+- App declares stacks as statics (`Stack<N>`, `#[repr(align(32))]`) and builds `Task::new(name, priority, entry: fn() -> !, &STACK)` values in `main` (priority 1..=7). `kernel::start(&mut [Task], sys_hz) -> !`; `sys_hz` comes from the HAL clocks (`app::Board.sys_hz`) so the kernel stays board-agnostic.
+- The kernel creates the idle task itself (`Task::idle`, priority 0, 128-word stack).
 - 8 priorities, higher = more urgent. Priority 0 reserved for the idle task; apps use 1–7. Ready set = `u8` bitmap + per-priority list; highest via CLZ.
 - PendSV (asm, lowest exception priority):
   1. Hardware has stacked R0–R3, R12, LR, PC, xPSR (+ S0–S15, FPSCR if FP active; lazy stacking).
@@ -65,8 +66,8 @@ pub struct Task {
   3. Store `sp` to current task; call `sched::switch()`.
   4. Load next `sp`, `stack_limit` into PSP/PSPLIM, set CONTROL.nPRIV, (level 4) load MPU regions, pop, `bx` EXC_RETURN.
 - Initial frame: xPSR `0x0100_0000`, PC = entry, LR = trap that panics, EXC_RETURN `0xFFFF_FFFD`.
-- Start: set PSP to a dummy area, mark no current task, pend PendSV. No special first-task path.
-- Stack overflow: PSPLIM → UsageFault (STKOF), enabled via SHCSR. See section 5 for fault policy.
+- Start: make every task and idle ready, set PSP to a dummy area, pend PendSV. No special first-task path.
+- Stack overflow: PSPLIM → UsageFault (STKOF), escalated to HardFault (UsageFault is not enabled separately before M5). See section 5 for fault policy.
 
 ## 3. Scheduling and time
 
@@ -76,8 +77,10 @@ pub struct Task {
 - SysTick at 1 kHz from the core clock. `u64` tick count, read inside a critical section; never wraps.
 - Sleepers sit in a list sorted by wake tick; SysTick only examines the head, wakes due tasks, rotates round-robin, pends PendSV if needed.
 - API: `now() -> u64`, `sleep(ms)`, `sleep_until(tick)`, `yield_now()`.
-- Critical section: save PRIMASK + `cpsid i`, restore on exit. The `critical-section` crate implementation comes from `cortex-m`'s `critical-section-single-core` feature (needed by `defmt-rtt`).
-- Host tests: bitmap highest pick, round-robin order, sorted sleep insert, multiple wakeups on one tick.
+- Critical section: `cortex_m::interrupt::free` (save PRIMASK, `cpsid i`, restore). All scheduler state lives in one `Sched` value in `sched.rs`; `arch::with_sched` is the only way to reach it, always inside a critical section. The `critical-section` crate implementation comes from `cortex-m`'s `critical-section-single-core` feature (needed by `defmt-rtt`).
+- Exception priorities: SysTick `0x80`, PendSV `0xFF`. SysTick can interrupt PendSV, hence the critical section in `kernel_switch`.
+- The running task is in no list; `switch()` requeues it at its list's tail only if still `Running` (a task woken before its switch is already queued).
+- Host tests: bitmap highest pick, round-robin order, sorted sleep insert with FIFO ties, wake on exact tick, preempt/time-slice decisions, the wake-before-switch race.
 
 ## 4. Synchronization
 
@@ -91,7 +94,7 @@ Semaphore (counting): `new(count)`, `take(timeout) -> Result<(), Timeout>`, `giv
 `Mutex<T>`: `lock(timeout) -> Result<Guard<T>, Timeout>`; guard unlocks on drop.
 - Tracks owner. Locking again from the owner panics (not recursive).
 - Priority inheritance: a higher-priority waiter raises the owner's effective priority; propagates through the owner's `blocked_on` mutex chain.
-- Unlock sets the owner's priority to max(`base_prio`, highest waiter on any other mutex it still holds).
+- Unlock sets the owner's `current_priority` to max(`original_priority`, highest waiter on any other mutex it still holds).
 - Task context only.
 
 `Queue<T, N>`: fixed ring buffer. `send(item, timeout)`, `recv(timeout)` block on full/empty. `try_send`, `try_recv` never block and may be called from interrupt handlers.
@@ -110,7 +113,7 @@ MPU (ARMv8-M PMSA, 8 regions, base/limit at 32-byte granularity, PRIVDEFENA = 1)
 - Regions reloaded in PendSV on each switch.
 - Kernel objects (sync objects, wait lists, TCBs) live in `.kobj`, privileged-only. Syscalls validate pointers: object pointers must lie inside `.kobj`; buffer pointers must lie inside the caller's regions.
 
-Fault policy (M2–M4: every fault logs and halts; task kill from M5, which needs it):
+Fault policy (M2–M4: every fault escalates to HardFault; probe-rs catches it, prints the backtrace and exits 1. Custom handlers and task kill arrive with M5, which needs them):
 - Fault in task context (MemManage, BusFault, UsageFault incl. STKOF): log task name + fault, set `Dead`, remove from all lists, switch away.
 - Fault in handler/kernel context: log and halt.
 - Interrupt handlers stay privileged and talk to tasks via `give()` / `try_send`.

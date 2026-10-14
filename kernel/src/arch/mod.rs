@@ -1,53 +1,133 @@
-//! Cortex-M33 context switching (M1: cooperative round-robin).
+//! Cortex-M33 glue: PendSV context switch, SysTick, critical sections, and the
+//! public task API. All scheduling decisions live in `sched.rs`.
 
-use core::arch::{asm, global_asm};
-use core::ptr::null_mut;
+use core::arch::global_asm;
 
-use crate::task::Task;
+use cortex_m::peripheral::scb::SystemHandler;
+use cortex_m::peripheral::syst::SystClkSource;
 
-static mut CURRENT: *mut Task = null_mut();
-static mut FIRST: *mut Task = null_mut();
+use crate::sched::Sched;
+use crate::task::{Stack, Task};
+
+/// The one scheduler. Only touch it through `with_sched`.
+static mut SCHED: Sched = Sched::new();
+/// The kernel's idle task, created by `start`.
+static mut IDLE: Option<Task> = None;
+static IDLE_STACK: Stack<128> = Stack::new();
+/// PSP target for the very first PendSV, which "saves" a non-task's registers.
 static mut DUMMY: [u32; 32] = [0; 32];
 
-pub fn start(tasks: &mut [Task]) -> ! {
-    assert!(!tasks.is_empty(), "start needs at least one task");
-    for i in 1..tasks.len() {
-        tasks[i - 1].next = &mut tasks[i];
+/// Runs `f` on the scheduler with interrupts masked (PRIMASK), so SysTick
+/// cannot touch it halfway through. Every access to `SCHED` goes through here.
+fn with_sched<R>(f: impl FnOnce(&mut Sched) -> R) -> R {
+    cortex_m::interrupt::free(|_| {
+        let s = unsafe { &mut *(&raw mut SCHED) };
+        return f(s);
+    })
+}
+
+/// Runs when nothing else is ready: sleep the core until the next interrupt.
+fn idle() -> ! {
+    loop {
+        cortex_m::asm::wfi();
     }
-    tasks.last_mut().unwrap().next = &mut tasks[0];
+}
+
+/// Makes every task (and the idle task) ready, sets PendSV to the lowest
+/// priority and SysTick above it, starts SysTick at 1 kHz from `sys_freq`,
+/// points PSP at `DUMMY`, and pends the first switch. Never returns.
+pub fn start(tasks: &mut [Task], sys_freq: u32) -> ! {
+    assert!(!tasks.is_empty(), "start needs at least one task");
+    // One base pointer for every task: `tasks` is never borrowed again, so the
+    // pointers the scheduler keeps stay valid (and `start` never returns).
+    let base = tasks.as_mut_ptr();
+    let n = tasks.len();
+    // SAFETY: interrupts are not running kernel code yet (SysTick is off, no
+    // PendSV pended); IDLE is written once here and only read via its pointer.
+    let idle_task = unsafe { (*&raw mut IDLE).insert(Task::idle(idle, &IDLE_STACK)) as *mut Task };
+    with_sched(|s| unsafe {
+        for i in 0..n {
+            s.make_ready(base.add(i));
+        }
+        s.make_ready(idle_task);
+    });
+
+    // SAFETY: the HAL owns the device peripherals, not these core ones; the
+    // kernel is the only user of SCB priorities, SYST and PSP.
     unsafe {
-        FIRST = tasks.as_mut_ptr();
-        cortex_m::Peripherals::steal()
-            .SCB
-            .set_priority(cortex_m::peripheral::scb::SystemHandler::PendSV, 0xFF);
+        let mut p = cortex_m::Peripherals::steal();
+        // PendSV lowest so a switch never interrupts a handler; SysTick above it.
+        p.SCB.set_priority(SystemHandler::PendSV, 0xFF);
+        p.SCB.set_priority(SystemHandler::SysTick, 0x80);
+        // SysTick counts core cycles: reload N-1 for an N-cycle (1 ms) period.
+        p.SYST.set_clock_source(SystClkSource::Core);
+        p.SYST.set_reload(sys_freq / 1000 - 1);
+        p.SYST.clear_current();
+        p.SYST.enable_interrupt();
+        p.SYST.enable_counter();
         cortex_m::register::psp::write((&raw mut DUMMY as *mut u32).add(32) as u32);
     }
     yield_now();
     unreachable!()
 }
 
+/// Hands the CPU to the next task by pending PendSV.
 pub fn yield_now() {
     cortex_m::peripheral::SCB::set_pendsv();
     cortex_m::asm::dsb();
     cortex_m::asm::isb();
 }
 
+/// Ticks (ms) since `start`.
+pub fn now() -> u64 {
+    // u64 is two words on a 32-bit core: read it with SysTick masked.
+    with_sched(|s| s.now())
+}
+
+/// Sleeps until tick `tick`; returns at once if it is now or in the past.
+pub fn sleep_until(tick: u64) {
+    if with_sched(|s| s.sleep_current(tick)) {
+        yield_now(); // switch away now; we resume once `tick` wakes us
+    }
+}
+
+/// Sleeps for `ms` ticks. Compute the deadline in the same critical section as
+/// `sleep_current`, or a tick in between shortens the sleep.
+pub fn sleep(ms: u32) {
+    if with_sched(|s| s.sleep_current(s.now() + ms as u64)) {
+        yield_now();
+    }
+}
+
+/// SysTick exception (1 kHz): advance time; pend PendSV if `tick` says so.
+/// The name must be exactly `SysTick` for cortex-m-rt's vector table.
+#[unsafe(no_mangle)]
+extern "C" fn SysTick() {
+    if with_sched(|s| s.tick()) {
+        cortex_m::peripheral::SCB::set_pendsv();
+    }
+}
+
+/// Called from PendSV with the outgoing task's saved stack pointer in r0.
+/// Inside `with_sched`: store `sp` into the current task (if any), let
+/// `Sched::switch` pick the next one, load its `stack_limit` into PSPLIM, and
+/// return its saved stack pointer.
 #[unsafe(no_mangle)]
 extern "C" fn kernel_switch(sp: *mut u32) -> *mut u32 {
-    // SAFETY: runs only inside PendSV (lowest priority, never re-entered), so
-    // nothing else touches CURRENT/FIRST or the task records concurrently.
-    unsafe {
-        let mut next = null_mut();
-        if CURRENT == null_mut() {
-            next = FIRST;
-        } else {
-            (*CURRENT).sp = sp;
-            next = (*CURRENT).next;
+    with_sched(|s| {
+        let current = s.current();
+        if !current.is_null() {
+            unsafe {
+                (*current).sp = sp;
+            }
         }
-        CURRENT = next;
-        asm!("msr psplim, {}", in(reg) (*next).stack_limit);
-        return (*next).sp;
-    }
+        let next = s.switch();
+        // PSPLIM takes the address as a plain u32; `next` is valid (just picked by `switch`).
+        unsafe {
+            cortex_m::register::psplim::write((*next).stack_limit as u32);
+            return (*next).sp;
+        }
+    })
 }
 
 // PendSV: the context switch. On entry the hardware has already pushed the
