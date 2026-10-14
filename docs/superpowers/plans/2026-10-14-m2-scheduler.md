@@ -32,7 +32,8 @@ pub struct Task {
     pub(crate) sp: *mut u32,
     pub(crate) stack_limit: *mut u32,
     pub(crate) state: State,
-    pub(crate) prio: u8,
+    pub(crate) current_priority: u8,  // effective priority (M4 inheritance may raise it)
+    pub(crate) original_priority: u8, // declared priority (M4 restores to it)
     pub(crate) wake: u64,     // tick to wake at while Sleeping
     pub(crate) next: *mut Task, // link in whichever list the task is in
     name: &'static str,
@@ -120,7 +121,8 @@ impl Task {
             sp: core::ptr::null_mut(),
             stack_limit: core::ptr::null_mut(),
             state: State::Ready,
-            prio,
+            current_priority: prio,
+            original_priority: prio,
             wake: 0,
             next: core::ptr::null_mut(),
             name: "t",
@@ -658,7 +660,7 @@ git commit -m "test(m2): scheduler host tests, sleep/preempt binaries (red until
 
 **Build**
 1. `State`: replace the M1 enum with `Ready, Running, Sleeping` (derive `Clone, Copy, PartialEq, Debug`; `pub(crate)`). `Blocked`/`Dead` come with M3/M5.
-2. Add `pub(crate)` fields `state`, `prio: u8`, `wake: u64`.
+2. Add `pub(crate)` fields `state`, `current_priority: u8`, `original_priority: u8`, `wake: u64`. `Sched` reads only `current_priority`.
 3. Construction: `new` asserts `1..=7`; `pub(crate) fn idle(entry, stack)` builds the priority-0 task named `"idle"` with no check. Both share one private helper that writes the frame and fills the fields. `entry` is a parameter because the `wfi` loop is Arm-only and lives in `arch`.
 
 **Why** the running task needs `state`: see the race in Task 3's hints.
