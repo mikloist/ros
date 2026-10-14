@@ -17,20 +17,22 @@ impl<const N: usize> Stack<N> {
     }
 }
 
-enum State {
-    READY,
-    RUNNING,
-    SLEEPING,
-    BLOCKED,
-    DEAD,
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum State {
+    Ready,
+    Running,
+    Sleeping,
 }
 
 pub struct Task {
     pub(crate) sp: *mut u32,
     pub(crate) stack_limit: *mut u32,
-    state: State,
+    pub(crate) state: State,
     pub(crate) next: *mut Task,
     name: &'static str,
+    pub(crate) current_priority: u8,
+    pub(crate) original_priority: u8,
+    pub(crate) wake: u64,
 }
 
 fn task_exit() -> ! {
@@ -38,8 +40,26 @@ fn task_exit() -> ! {
 }
 
 impl Task {
+    /// An application task. Priority 0 is reserved for the kernel's idle task.
     pub fn new<const N: usize>(
         name: &'static str,
+        priority: u8,
+        entry: fn() -> !,
+        stack: &'static Stack<N>,
+    ) -> Task {
+        assert!((1..=7).contains(&priority), "task priority must be 1..=7 (0 is idle)");
+        Self::build(name, priority, entry, stack)
+    }
+
+    /// The kernel's idle task: priority 0, always ready when nothing else is.
+    pub(crate) fn idle<const N: usize>(entry: fn() -> !, stack: &'static Stack<N>) -> Task {
+        Self::build("idle", 0, entry, stack)
+    }
+
+    /// Writes the initial frame and fills the fields; callers check `priority`.
+    fn build<const N: usize>(
+        name: &'static str,
+        priority: u8,
         entry: fn() -> !,
         stack: &'static Stack<N>,
     ) -> Task {
@@ -55,13 +75,17 @@ impl Task {
             Self {
                 sp: base.add(start),
                 stack_limit: base,
-                state: State::READY,
+                state: State::Ready,
                 next: core::ptr::null_mut(),
                 name: name,
+                current_priority: priority,
+                original_priority: priority,
+                wake: 0,
             }
         }
     }
 }
+
 #[cfg(test)]
 impl Task {
     /// Stackless task for scheduler tests: only the fields `Sched` reads are meaningful.
@@ -70,7 +94,8 @@ impl Task {
             sp: core::ptr::null_mut(),
             stack_limit: core::ptr::null_mut(),
             state: State::Ready,
-            prio,
+            current_priority: prio,
+            original_priority: prio,
             wake: 0,
             next: core::ptr::null_mut(),
             name: "t",

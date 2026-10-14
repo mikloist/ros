@@ -43,6 +43,30 @@ fn task_limit_is_stack_bottom_and_sp_is_frame_start() {
     assert_eq!(t.sp, base.wrapping_add(64 - FRAME_WORDS), "sp must point at the frame start");
 }
 
+fn never() -> ! {
+    loop {}
+}
+
+#[test]
+#[should_panic(expected = "task priority must be 1..=7")]
+fn new_rejects_idle_priority() {
+    static STACK: Stack<64> = Stack::new();
+    Task::new("t", 0, never, &STACK);
+}
+
+#[test]
+#[should_panic(expected = "task priority must be 1..=7")]
+fn new_rejects_priority_above_7() {
+    static STACK: Stack<64> = Stack::new();
+    Task::new("t", 8, never, &STACK);
+}
+
+#[test]
+fn idle_gets_priority_zero() {
+    static STACK: Stack<64> = Stack::new();
+    assert_eq!(Task::idle(never, &STACK).current_priority, 0);
+}
+
 #[test]
 #[should_panic(expected = "Stack has to be bigger")]
 fn rejects_stack_smaller_than_one_frame() {
