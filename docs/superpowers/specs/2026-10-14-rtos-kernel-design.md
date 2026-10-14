@@ -117,8 +117,8 @@ Fault policy (M2–M4: every fault logs and halts; task kill from M5, which need
 
 ## 6. Testing and milestones
 
-- Host: `cargo test -p kernel` for pure logic.
-- Board: one binary per milestone in `app/src/bin/`, run via `probe-rs run`. Tasks verify with `assert!`; failure panics through `panic-probe`. Success ends with `bkpt`; whether `probe-rs run` exits 0 on `bkpt` is unverified and is checked in M0 (fallback: semihosting exit).
+- Host: `cargo ktest` (alias for `cargo test -p kernel --target x86_64-unknown-linux-gnu`) for pure logic.
+- Board: one binary per milestone in `app/src/bin/`, run via `probe-rs run`. Tasks verify with `assert!`; failure panics through `panic-probe` (exit 1). Success ends with a semihosting exit (`app::exit_ok()`, exit 0). Verified 2026-10-14: `bkpt` exits 1, so it is not used.
 
 | # | Goal | Proof |
 |---|---|---|
