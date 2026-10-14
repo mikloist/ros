@@ -39,7 +39,7 @@ pub struct Task {
 }
 impl Task {
     pub fn new<const N: usize>(name: &'static str, prio: u8, entry: fn() -> !, stack: &'static Stack<N>) -> Task; // asserts 1..=7
-    pub(crate) fn with_prio<const N: usize>(name: &'static str, prio: u8, entry: fn() -> !, stack: &'static Stack<N>) -> Task; // no check (idle)
+    pub(crate) fn idle<const N: usize>(entry: fn() -> !, stack: &'static Stack<N>) -> Task; // prio 0, name "idle"; kernel only
     #[cfg(test)] pub(crate) fn for_test(prio: u8) -> Task; // stackless, Claude writes it
 }
 
@@ -659,7 +659,7 @@ git commit -m "test(m2): scheduler host tests, sleep/preempt binaries (red until
 **Build**
 1. `State`: replace the M1 enum with `Ready, Running, Sleeping` (derive `Clone, Copy, PartialEq, Debug`; `pub(crate)`). `Blocked`/`Dead` come with M3/M5.
 2. Add `pub(crate)` fields `state`, `prio: u8`, `wake: u64`.
-3. Split construction: `with_prio(name, prio, entry, stack)` does what `new` does today; `new` asserts `1..=7` then calls it.
+3. Construction: `new` asserts `1..=7`; `pub(crate) fn idle(entry, stack)` builds the priority-0 task named `"idle"` with no check. Both share one private helper that writes the frame and fills the fields. `entry` is a parameter because the `wfi` loop is Arm-only and lives in `arch`.
 
 **Why** the running task needs `state`: see the race in Task 3's hints.
 
@@ -696,7 +696,7 @@ git commit -m "test(m2): scheduler host tests, sleep/preempt binaries (red until
 
 **Build**
 1. Replace `CURRENT`/`FIRST` with `static mut SCHED: Sched = Sched::new();` and one accessor `fn with_sched<R>(f: impl FnOnce(&mut Sched) -> R) -> R` that runs `f` inside `cortex_m::interrupt::free`. Every use of `SCHED` goes through it.
-2. Idle task: `fn idle() -> ! { loop { wfi } }`, a kernel-owned `Stack<128>`, and a `static mut IDLE: Option<Task>` filled in `start` (`Task::with_prio("idle", 0, ..)`).
+2. Idle task: `fn idle() -> ! { loop { wfi } }`, a kernel-owned `Stack<128>`, and a `static mut IDLE: Option<Task>` filled in `start` with `Task::idle(idle, &IDLE_STACK)`. Apps never declare it.
 3. `start(tasks, sys_hz)`: `make_ready` every task (pointers from one `tasks.as_mut_ptr()`), then idle; PendSV priority `0xFF`, SysTick `0x80`; SysTick: core clock source, reload `sys_hz / 1000 - 1`, clear current, enable interrupt + counter; PSP to `DUMMY`; pend PendSV.
 4. `kernel_switch(sp)`: inside `with_sched`: save `sp` into `current()` if non-null, `next = switch()`, PSPLIM, return `next.sp`.
 5. SysTick handler: `#[unsafe(no_mangle)] extern "C" fn SysTick()`; if `with_sched(|s| s.tick())`, pend PendSV (no barriers needed inside an exception).
