@@ -1,5 +1,7 @@
 use core::cell::UnsafeCell;
 
+use crate::sched::PRIOS;
+
 #[repr(C, align(32))] // 8-byte aligned frames (AAPCS); 32 for the MPU in M6
 pub struct Stack<const N: usize> {
     stack: UnsafeCell<[u32; N]>,
@@ -47,7 +49,11 @@ impl Task {
         entry: fn() -> !,
         stack: &'static Stack<N>,
     ) -> Task {
-        assert!((1..=7).contains(&priority), "task priority must be 1..=7 (0 is idle)");
+        assert!(
+            (1..PRIOS).contains(&(priority as usize)),
+            "task priority must be 1..={} (0 is idle)",
+            PRIOS - 1
+        );
         Self::build(name, priority, entry, stack)
     }
 
