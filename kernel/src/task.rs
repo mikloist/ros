@@ -26,10 +26,10 @@ enum State {
 }
 
 pub struct Task {
-    sp: *mut u32,
-    stack_limit: *mut u32,
+    pub(crate) sp: *mut u32,
+    pub(crate) stack_limit: *mut u32,
     state: State,
-    next: *mut Task,
+    pub(crate) next: *mut Task,
     name: &'static str,
 }
 
