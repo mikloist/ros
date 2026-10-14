@@ -30,11 +30,29 @@ fn hardware_frame_returns_into_entry() {
     assert_eq!(hw[6], ENTRY & !1, "pc: entry with Thumb bit cleared");
     assert_eq!(hw[7], 0x0100_0000, "xPSR: only the Thumb bit");
 }
-
+#[test]
+fn task_limit_is_stack_bottom_and_sp_is_frame_start() {
+    static STACK: Stack<64> = Stack::new();
+    fn never() -> ! {
+        loop {}
+    }
+    let t = Task::new("t", never, &STACK);
+    let base = STACK.stack.get() as *mut u32;
+    // PSPLIM is the lowest legal address: the stack grows down toward it.
+    assert_eq!(t.stack_limit, base, "stack_limit must be the bottom, not the top");
+    assert_eq!(t.sp, base.wrapping_add(64 - FRAME_WORDS), "sp must point at the frame start");
+}
 
 #[test]
-#[should_panic]
+#[should_panic(expected = "Stack has to be bigger")]
 fn rejects_stack_smaller_than_one_frame() {
-    let mut s = [0u32; 16];
+    // Must hit the explicit size check, not an arithmetic-overflow panic.
+    let mut s = [0u32; FRAME_WORDS - 1];
     init_stack(&mut s, ENTRY, EXIT);
+}
+
+#[test]
+fn accepts_stack_of_exactly_one_frame() {
+    let mut s = [0xAAAA_AAAA; FRAME_WORDS];
+    assert_eq!(init_stack(&mut s, ENTRY, EXIT), 0);
 }

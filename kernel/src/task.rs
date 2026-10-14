@@ -1,0 +1,89 @@
+use core::cell::UnsafeCell;
+
+#[repr(C, align(32))] // 8-byte aligned frames (AAPCS); 32 for the MPU in M6
+pub struct Stack<const N: usize> {
+    stack: UnsafeCell<[u32; N]>,
+}
+
+// SAFETY: each `Stack` is handed to exactly one `Task::new`; only that task
+// (and the kernel on its behalf) ever touches the words inside.
+unsafe impl<const N: usize> Sync for Stack<N> {}
+
+impl<const N: usize> Stack<N> {
+    pub const fn new() -> Self {
+        return Self {
+            stack: UnsafeCell::new([0; N]),
+        };
+    }
+}
+
+enum State {
+    READY,
+    RUNNING,
+    SLEEPING,
+    BLOCKED,
+    DEAD,
+}
+
+pub struct Task {
+    sp: *mut u32,
+    stack_limit: *mut u32,
+    state: State,
+    next: *mut Task,
+    name: &'static str,
+}
+
+fn task_exit() -> ! {
+    panic!("Task returned")
+}
+
+impl Task {
+    pub fn new<const N: usize>(
+        name: &'static str,
+        entry: fn() -> !,
+        stack: &'static Stack<N>,
+    ) -> Task {
+        // SAFETY: see `impl Sync for Stack`: this is the stack's only user.
+        let words: &mut [u32; N] = unsafe { &mut *stack.stack.get() };
+        let start = init_stack(
+            words,
+            entry as fn() -> ! as usize as u32,
+            task_exit as fn() -> ! as usize as u32,
+        );
+        let base = words.as_mut_ptr();
+        unsafe {
+            Self {
+                sp: base.add(start),
+                stack_limit: base,
+                state: State::READY,
+                next: core::ptr::null_mut(),
+                name: name,
+            }
+        }
+    }
+}
+/// Exception return value for a fresh task: return to Thread mode, Secure,
+/// use PSP, standard (non-FP) frame. Bit 4 = 1 means "no FP frame".
+const EXC_RETURN: u32 = 0xFFFF_FFFD;
+/// Initial xPSR: only the Thumb bit (24). Cortex-M runs Thumb only; returning
+/// with it clear faults (INVSTATE).
+const XPSR: u32 = 0x0100_0000;
+
+pub(crate) const FRAME_WORDS: usize = 17;
+pub(crate) fn init_stack(stack: &mut [u32], entry: u32, on_exit: u32) -> usize {
+    assert!(
+        stack.len() >= FRAME_WORDS,
+        "Stack has to be bigger {FRAME_WORDS}"
+    );
+
+    let s = stack.len() - FRAME_WORDS;
+    stack[s..s + 16].fill(0);
+    stack[s + 8] = EXC_RETURN;
+    stack[s + 14] = on_exit;
+    stack[s + 15] = entry & !1;
+    stack[s + 16] = XPSR;
+    return s;
+}
+
+#[cfg(test)]
+mod tests;
