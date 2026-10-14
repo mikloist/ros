@@ -49,6 +49,6 @@ fn main() -> ! {
     let pin = b.pins.gpio15.into_push_pull_output();
     // SAFETY: no task is running yet.
     unsafe { *&raw mut LED = Some((pin, b.timer)) };
-    let mut tasks = [Task::new("led", led, &STACK_LED), Task::new("counter", counter, &STACK_COUNTER)];
-    kernel::start(&mut tasks)
+    let mut tasks = [Task::new("led", 1, led, &STACK_LED), Task::new("counter", 1, counter, &STACK_COUNTER)];
+    kernel::start(&mut tasks, b.sys_hz)
 }

@@ -62,6 +62,22 @@ impl Task {
         }
     }
 }
+#[cfg(test)]
+impl Task {
+    /// Stackless task for scheduler tests: only the fields `Sched` reads are meaningful.
+    pub(crate) fn for_test(prio: u8) -> Task {
+        Task {
+            sp: core::ptr::null_mut(),
+            stack_limit: core::ptr::null_mut(),
+            state: State::Ready,
+            prio,
+            wake: 0,
+            next: core::ptr::null_mut(),
+            name: "t",
+        }
+    }
+}
+
 /// Exception return value for a fresh task: return to Thread mode, Secure,
 /// use PSP, standard (non-FP) frame. Bit 4 = 1 means "no FP frame".
 const EXC_RETURN: u32 = 0xFFFF_FFFD;

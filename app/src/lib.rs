@@ -1,6 +1,7 @@
 //! Board support shared by every demo binary.
 #![no_std]
 
+use hal::Clock;
 use rp235x_hal as hal;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -17,6 +18,8 @@ pub const XTAL_FREQ_HZ: u32 = 12_000_000;
 pub struct Board {
     pub pins: hal::gpio::Pins,
     pub timer: hal::Timer<hal::timer::CopyableTimer0>,
+    /// Core clock in Hz (150 MHz); `kernel::start` derives the 1 kHz tick from it.
+    pub sys_hz: u32,
 }
 
 /// Clocks to 150 MHz, GPIO bank, TIMER0.
@@ -36,7 +39,7 @@ pub fn init() -> Board {
     let timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
     let sio = hal::Sio::new(pac.SIO);
     let pins = hal::gpio::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
-    Board { pins, timer }
+    Board { pins, timer, sys_hz: clocks.system_clock.freq().to_Hz() }
 }
 
 /// End a test binary successfully: `probe-rs run` exits 0.

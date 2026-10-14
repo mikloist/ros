@@ -1,5 +1,7 @@
-//! M1: two tasks alternate via cooperative `yield_now`; the context switch
-//! preserves callee-saved FP registers (s16-s31) that only PendSV can save.
+//! M1: two tasks alternate via `yield_now`; the context switch preserves
+//! callee-saved FP registers (s16-s31) that only PendSV can save. Since M2 a
+//! tick can also switch tasks, so each task waits for its turn instead of
+//! asserting it already has it.
 #![no_std]
 #![no_main]
 
@@ -136,7 +138,9 @@ fn fp_regs_survive_switch(seed: u32) -> bool {
 
 fn task_a() -> ! {
     for i in 0..ROUNDS {
-        assert_eq!(TURN.load(SeqCst), 2 * i, "a ran out of turn");
+        while TURN.load(SeqCst) != 2 * i {
+            kernel::yield_now();
+        }
         defmt::info!("a round {}", i);
         TURN.fetch_add(1, SeqCst);
         assert!(fp_regs_survive_switch(0x1000), "a: s16-s31 not preserved");
@@ -148,19 +152,19 @@ fn task_a() -> ! {
 
 fn task_b() -> ! {
     for i in 0..ROUNDS {
-        assert_eq!(TURN.load(SeqCst), 2 * i + 1, "b ran out of turn");
+        while TURN.load(SeqCst) != 2 * i + 1 {
+            kernel::yield_now();
+        }
         defmt::info!("b round {}", i);
         TURN.fetch_add(1, SeqCst);
         assert!(fp_regs_survive_switch(0x2000), "b: s16-s31 not preserved");
     }
-    kernel::yield_now(); // a gets one more turn: yield_now itself must switch
-    assert_eq!(TURN.load(SeqCst), 2 * ROUNDS);
     app::exit_ok()
 }
 
 #[app::entry]
 fn main() -> ! {
-    app::init();
-    let mut tasks = [Task::new("a", task_a, &STACK_A), Task::new("b", task_b, &STACK_B)];
-    kernel::start(&mut tasks)
+    let b = app::init();
+    let mut tasks = [Task::new("a", 1, task_a, &STACK_A), Task::new("b", 1, task_b, &STACK_B)];
+    kernel::start(&mut tasks, b.sys_hz)
 }

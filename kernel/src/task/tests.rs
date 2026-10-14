@@ -36,7 +36,7 @@ fn task_limit_is_stack_bottom_and_sp_is_frame_start() {
     fn never() -> ! {
         loop {}
     }
-    let t = Task::new("t", never, &STACK);
+    let t = Task::new("t", 1, never, &STACK);
     let base = STACK.stack.get() as *mut u32;
     // PSPLIM is the lowest legal address: the stack grows down toward it.
     assert_eq!(t.stack_limit, base, "stack_limit must be the bottom, not the top");

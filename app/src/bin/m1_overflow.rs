@@ -22,7 +22,7 @@ fn task_a() -> ! {
 
 #[app::entry]
 fn main() -> ! {
-    app::init();
-    let mut tasks = [Task::new("a", task_a, &STACK_A)];
-    kernel::start(&mut tasks)
+    let b = app::init();
+    let mut tasks = [Task::new("a", 1, task_a, &STACK_A)];
+    kernel::start(&mut tasks, b.sys_hz)
 }
