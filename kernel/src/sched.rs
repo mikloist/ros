@@ -7,10 +7,7 @@
 //! - A task is in at most one list at a time, linked through `Task::next`.
 use core::ptr::null_mut;
 
-use crate::task::{
-    State::{self, Blocked},
-    Task,
-};
+use crate::task::{State, Task};
 
 pub(crate) const PRIOS: usize = 8;
 
@@ -57,6 +54,55 @@ impl List {
             }
         }
         return current;
+    }
+}
+
+// ---- Singly linked lists threaded through a `Task` link field ----
+//
+// The sleep list uses `next`, wait lists use `wait_next` (a timed waiter is on
+// both at once). `head` points at the list's head pointer; walking a pointer to
+// the link (not to the task) makes front, middle and end the same case.
+
+/// Which link field a list follows.
+type LinkOf = unsafe fn(*mut Task) -> *mut *mut Task;
+
+unsafe fn by_next(t: *mut Task) -> *mut *mut Task {
+    unsafe { &raw mut (*t).next }
+}
+
+unsafe fn by_wait_next(t: *mut Task) -> *mut *mut Task {
+    unsafe { &raw mut (*t).wait_next }
+}
+
+/// Splices `t` in before the first task where `stop` is true, or at the end.
+unsafe fn insert_where(
+    head: *mut *mut Task,
+    t: *mut Task,
+    link: LinkOf,
+    stop: impl Fn(*mut Task) -> bool,
+) {
+    unsafe {
+        let mut at = head;
+        while !(*at).is_null() && !stop(*at) {
+            at = link(*at);
+        }
+        *link(t) = *at;
+        *at = t;
+    }
+}
+
+/// Unlinks `t` if it is in the list (no-op otherwise) and clears its link.
+unsafe fn remove(head: *mut *mut Task, t: *mut Task, link: LinkOf) {
+    unsafe {
+        let mut at = head;
+        while !(*at).is_null() {
+            if *at == t {
+                *at = *link(t);
+                *link(t) = null_mut();
+                return;
+            }
+            at = link(*at);
+        }
     }
 }
 
@@ -161,29 +207,15 @@ impl Sched {
     /// why the task waits: `Sleeping`, or `Blocked` for a timed wait.
     unsafe fn insert_sleeper(&mut self, t: *mut Task, until: u64, state: State) {
         unsafe {
-            let mut link: *mut *mut Task = &mut self.sleeping;
-            while !(*link).is_null() && (**link).wake <= until {
-                link = &mut (**link).next;
-            }
-            (*t).next = *link;
-            *link = t;
             (*t).state = state;
             (*t).wake = until;
+            insert_where(&mut self.sleeping, t, by_next, |o| (*o).wake > until);
         }
     }
 
+    /// Unlinks `t` from `sleeping` if it is there (cancels a timeout).
     unsafe fn remove_sleeper(&mut self, t: *mut Task) {
-        unsafe {
-            let mut link: *mut *mut Task = &mut self.sleeping;
-            while !(*link).is_null() {
-                if (*link) == t {
-                    (*link) = (*t).next;
-                    (*t).next = null_mut();
-                    return;
-                }
-                link = &mut (**link).next;
-            }
-        }
+        unsafe { remove(&mut self.sleeping, t, by_next) };
     }
 
     /// Called from SysTick. Advances `now`, makes every sleeper with
@@ -198,12 +230,7 @@ impl Sched {
                 self.sleeping = (*c).next;
                 if (*c).state == State::Blocked {
                     // Timed wait expired before the event: leave the wait list.
-                    let mut link: *mut *mut Task = &mut (*(*c).waiting_on).head;
-                    while *link != c {
-                        link = &mut (**link).wait_next;
-                    }
-                    *link = (*c).wait_next;
-                    (*c).wait_next = null_mut();
+                    remove(&mut (*(*c).waiting_on).head, c, by_wait_next);
                     (*c).waiting_on = null_mut();
                     (*c).timed_out = true;
                 }
@@ -234,15 +261,10 @@ impl Sched {
             (*c).waiting_on = wl;
             (*c).timed_out = false;
 
-            // Priority-ordered insert through `wait_next`: skip every waiter at
-            // least as urgent, so equal priorities stay in arrival order.
+            // Most urgent first; stop before the first *less* urgent waiter,
+            // so equal priorities stay in arrival order.
             let p = (*c).current_priority;
-            let mut link: *mut *mut Task = &mut (*wl).head;
-            while !(*link).is_null() && (**link).current_priority >= p {
-                link = &mut (**link).wait_next;
-            }
-            (*c).wait_next = *link;
-            *link = c;
+            insert_where(&mut (*wl).head, c, by_wait_next, |o| (*o).current_priority < p);
 
             if let Some(v) = timeout {
                 self.insert_sleeper(c, self.now + v, State::Blocked);
