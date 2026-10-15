@@ -180,6 +180,49 @@ impl Sched {
             return Some((*self.current).current_priority) <= self.highest();
         }
     }
+
+    /// Blocks the current task on `wl`: state Blocked, `timed_out = false`,
+    /// `waiting_on = wl`, inserted after every waiter with priority >= its own
+    /// (via `wait_next`). With `Some(ticks)` it also goes on the sleep list at
+    /// `now + ticks`. The caller pends PendSV.
+    ///
+    /// # Safety
+    /// `wl` outlives the wait (sync objects are `static`).
+    pub(crate) unsafe fn block_current(&mut self, wl: *mut WaitList, timeout: Option<u64>) {
+        todo!()
+    }
+
+    /// Pops the most urgent waiter off `wl`, cancels its timeout (removes it
+    /// from the sleep list), makes it ready and returns it; null if none.
+    ///
+    /// # Safety
+    /// `wl` is a live wait list.
+    pub(crate) unsafe fn wake_one(&mut self, wl: *mut WaitList) -> *mut Task {
+        todo!()
+    }
+
+    /// True if a ready task's priority is >= the current task's (false before
+    /// the first switch). `tick` should end with this.
+    pub(crate) fn should_switch(&self) -> bool {
+        todo!()
+    }
+}
+
+/// Tasks blocked on one sync object, linked through `Task::wait_next`, most
+/// urgent first; equal priorities in arrival order.
+pub(crate) struct WaitList {
+    head: *mut Task,
+}
+
+impl WaitList {
+    pub(crate) const fn new() -> Self {
+        WaitList { head: null_mut() }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.head.is_null()
+    }
 }
 
 #[cfg(test)]

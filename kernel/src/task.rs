@@ -1,6 +1,6 @@
 use core::cell::UnsafeCell;
 
-use crate::sched::PRIOS;
+use crate::sched::{PRIOS, WaitList};
 
 #[repr(C, align(32))] // 8-byte aligned frames (AAPCS); 32 for the MPU in M6
 pub struct Stack<const N: usize> {
@@ -24,6 +24,7 @@ pub(crate) enum State {
     Ready,
     Running,
     Sleeping,
+    Blocked,
 }
 
 pub struct Task {
@@ -35,6 +36,10 @@ pub struct Task {
     pub(crate) current_priority: u8,
     pub(crate) original_priority: u8,
     pub(crate) wake: u64,
+    pub(crate) waiting_on: *mut WaitList,
+    pub(crate) wait_next: *mut Task,
+    pub(crate) timed_out: bool,
+    pub(crate) msg: *mut (),
 }
 
 fn task_exit() -> ! {
@@ -87,6 +92,10 @@ impl Task {
                 current_priority: priority,
                 original_priority: priority,
                 wake: 0,
+                waiting_on: core::ptr::null_mut(),
+                wait_next: core::ptr::null_mut(),
+                timed_out: false,
+                msg: core::ptr::null_mut(),
             }
         }
     }
@@ -103,10 +112,10 @@ impl Task {
             current_priority: prio,
             original_priority: prio,
             wake: 0,
-                waiting_on: core::ptr::null_mut(),
-                wait_next: core::ptr::null_mut(),
-                timed_out: false,
-                msg: core::ptr::null_mut(),
+            waiting_on: core::ptr::null_mut(),
+            wait_next: core::ptr::null_mut(),
+            timed_out: false,
+            msg: core::ptr::null_mut(),
             next: core::ptr::null_mut(),
             name: "t",
         }
