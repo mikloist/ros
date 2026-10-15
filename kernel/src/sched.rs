@@ -7,7 +7,10 @@
 //! - A task is in at most one list at a time, linked through `Task::next`.
 use core::ptr::null_mut;
 
-use crate::task::{State, Task};
+use crate::task::{
+    State::{self, Blocked},
+    Task,
+};
 
 pub(crate) const PRIOS: usize = 8;
 
@@ -148,18 +151,39 @@ impl Sched {
                 "sleep_current: no running task"
             );
 
-            (*cur).state = State::Sleeping;
-            (*cur).wake = until;
+            self.insert_sleeper(cur, until, State::Sleeping);
+        }
 
+        return true;
+    }
+
+    /// Sorted insert into `sleeping` (ties keep arrival order). `state` says
+    /// why the task waits: `Sleeping`, or `Blocked` for a timed wait.
+    unsafe fn insert_sleeper(&mut self, t: *mut Task, until: u64, state: State) {
+        unsafe {
             let mut link: *mut *mut Task = &mut self.sleeping;
             while !(*link).is_null() && (**link).wake <= until {
                 link = &mut (**link).next;
             }
-            (*cur).next = *link;
-            *link = cur;
+            (*t).next = *link;
+            *link = t;
+            (*t).state = state;
+            (*t).wake = until;
         }
+    }
 
-        return true;
+    unsafe fn remove_sleeper(&mut self, t: *mut Task) {
+        unsafe {
+            let mut link: *mut *mut Task = &mut self.sleeping;
+            while !(*link).is_null() {
+                if (*link) == t {
+                    (*link) = (*t).next;
+                    (*t).next = null_mut();
+                    return;
+                }
+                link = &mut (**link).next;
+            }
+        }
     }
 
     /// Called from SysTick. Advances `now`, makes every sleeper with
@@ -172,12 +196,20 @@ impl Sched {
             while !self.sleeping.is_null() && (*self.sleeping).wake <= self.now {
                 let c = self.sleeping;
                 self.sleeping = (*c).next;
+                if (*c).state == State::Blocked {
+                    // Timed wait expired before the event: leave the wait list.
+                    let mut link: *mut *mut Task = &mut (*(*c).waiting_on).head;
+                    while *link != c {
+                        link = &mut (**link).wait_next;
+                    }
+                    *link = (*c).wait_next;
+                    (*c).wait_next = null_mut();
+                    (*c).waiting_on = null_mut();
+                    (*c).timed_out = true;
+                }
                 self.make_ready(c);
             }
-            if self.current.is_null() {
-                return false;
-            }
-            return Some((*self.current).current_priority) <= self.highest();
+            return self.should_switch();
         }
     }
 
@@ -189,7 +221,33 @@ impl Sched {
     /// # Safety
     /// `wl` outlives the wait (sync objects are `static`).
     pub(crate) unsafe fn block_current(&mut self, wl: *mut WaitList, timeout: Option<u64>) {
-        todo!()
+        assert!(self.current != null_mut(), "block_current: no running task");
+        assert!(
+            unsafe { (*self.current).state == State::Running },
+            "block_current: no running task"
+        );
+
+        unsafe {
+            let c = self.current;
+
+            (*c).state = State::Blocked;
+            (*c).waiting_on = wl;
+            (*c).timed_out = false;
+
+            // Priority-ordered insert through `wait_next`: skip every waiter at
+            // least as urgent, so equal priorities stay in arrival order.
+            let p = (*c).current_priority;
+            let mut link: *mut *mut Task = &mut (*wl).head;
+            while !(*link).is_null() && (**link).current_priority >= p {
+                link = &mut (**link).wait_next;
+            }
+            (*c).wait_next = *link;
+            *link = c;
+
+            if let Some(v) = timeout {
+                self.insert_sleeper(c, self.now + v, State::Blocked);
+            }
+        }
     }
 
     /// Pops the most urgent waiter off `wl`, cancels its timeout (removes it
@@ -198,13 +256,34 @@ impl Sched {
     /// # Safety
     /// `wl` is a live wait list.
     pub(crate) unsafe fn wake_one(&mut self, wl: *mut WaitList) -> *mut Task {
-        todo!()
+        if wl.is_null() {
+            return null_mut();
+        }
+
+        unsafe {
+            let t = (*wl).head;
+            if t.is_null() {
+                return null_mut();
+            }
+            (*wl).head = (*t).wait_next;
+            (*t).wait_next = null_mut();
+            (*t).waiting_on = null_mut();
+            self.remove_sleeper(t);
+            self.make_ready(t);
+            return t;
+        }
     }
 
     /// True if a ready task's priority is >= the current task's (false before
     /// the first switch). `tick` should end with this.
     pub(crate) fn should_switch(&self) -> bool {
-        todo!()
+        unsafe {
+            if !self.current.is_null() {
+                return Some((*self.current).current_priority) <= self.highest();
+            } else {
+                return false;
+            }
+        }
     }
 }
 
