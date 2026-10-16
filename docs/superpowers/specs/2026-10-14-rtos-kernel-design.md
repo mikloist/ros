@@ -8,12 +8,12 @@ Learning project: write a preemptive RTOS kernel in Rust for the RP2350 (Pico 2 
 |---|---|
 | Depth | Kernel from scratch; borrow platform (`cortex-m-rt`, `rp235x-hal`). Embassy removed. |
 | Cores | Arm Cortex-M33 (`thumbv8m.main-none-eabihf`), Secure state, no TrustZone setup. |
-| SMP | Core 0 only. Critical sections behind one `arch` API so SMP can swap them later. |
+| SMP | Core 0 only through M6. Critical sections behind one `arch` API so M7 (multicore) can swap them. |
 | v1 scope | Levels 1–4: context switch, preemptive priority scheduler, semaphore/mutex/queue, SVC + unprivileged tasks + MPU. |
 | Structure | FreeRTOS-style, static task table, shared address space, no heap. Scheduler handles `*mut Task` only, so runtime task creation (heap-backed) can be added later without rewriting it. |
 | Debug I/O | `defmt` over RTT, `probe-rs run`. External LED on GP15 (onboard LED needs CYW43). |
 
-Out of scope for v1 (each gets its own spec): runtime task creation, CYW43 Wi-Fi, second core, tickless idle.
+Out of scope for v1 (each gets its own spec): runtime task creation, second core (M7, after M6), CYW43 Wi-Fi (after M7), tickless idle.
 
 ## 1. Layout and boot
 
@@ -132,3 +132,4 @@ Fault policy (M2–M4: every fault escalates to HardFault; probe-rs catches it, 
 | M4 | Mutex + priority inheritance | Classic low/medium/high inversion scenario resolved; asserts check ordering |
 | M5 | SVC + unprivileged tasks | Whole API via syscalls; unprivileged SysTick write faults and kills only that task |
 | M6 | MPU | Bad pointer kills only the offending task; others keep running |
+| M7 | Multicore (own spec) | Tasks run on both cores; a `give()` on one core wakes a task on the other |

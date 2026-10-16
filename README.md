@@ -7,7 +7,6 @@ I use AI as a tutor and pair programmer. The split:
 
 - Me: the design decisions (scope, Arm vs RISC-V, single core, static tasks, API and naming choices) and most of the kernel core (task frames, the scheduler, the ring buffer, wait lists), written by hand with AI explaining concepts and reviewing.
 - AI: the per-milestone design spec and plans, the test harness (host tests and on-board test binaries), board plumbing and demos. Before each plan it builds a throwaway reference kernel and runs it on the board, so the tests and hints are known to be achievable; that reference is deleted, not copied in.
-- AI also wrote some kernel pieces when I asked it to, e.g. the PendSV assembly, `start`, `sleep`/`now`, the timeout path in `tick`, and the shared list helpers. Every change goes through `cargo ktest` and the board tests.
 
 # Model
 Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cortex-m-rt`, `rp235x-hal`); the kernel is written from scratch.
@@ -15,7 +14,7 @@ Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cort
 - Tasks are declared statically: a `Stack<N>` static plus `Task::new(name, priority, entry, &STACK)`, handed to `kernel::start(&mut tasks, sys_hz)`, which never returns.
 - Context switch = PendSV (lowest exception priority). Hardware stacks half the registers, PendSV saves r4-r11, EXC_RETURN and, only if the task used the FPU, s16-s31.
 - A new task's stack is pre-filled to look like it was interrupted just before its first instruction, so the first switch "returns" into it.
-- Tasks run on PSP; PSPLIM is set per task, so a stack overflow faults in hardware instead of corrupting memory.
+- Tasks run on PSP (Process Stack Pointer; the kernel and interrupt handlers use MSP, the Main Stack Pointer); PSPLIM (PSP limit register) is set per task, so a stack overflow faults in hardware instead of corrupting memory.
 - All scheduler state lives in one `Sched` value (pure logic, host-tested). The only way in is `with_sched`, which runs inside a critical section (interrupts masked).
 - Kernel lists are intrusive: the links live inside `Task` (`next` for ready/sleep lists, `wait_next` for wait lists), so a task can be on two lists at once with no allocation.
 
@@ -34,7 +33,7 @@ Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cort
     - Wait lists in priority order, FIFO on ties; the woken task gets the unit/item directly
     - A timed waiter is on the wait list and the sleep list at once; whichever fires first removes it from the other
     - `give`, `try_send`, `try_recv` are safe from interrupt handlers
-- Planned: mutex with priority inheritance (M4), SVC syscalls + unprivileged tasks (M5), MPU isolation (M6), then Wi-Fi via the CYW43 chip
+- Planned: mutex with priority inheritance (M4), SVC syscalls + unprivileged tasks (M5), MPU isolation (M6), multicore (M7), then Wi-Fi via the CYW43 chip
 
 # Layout
 - `kernel/`: the RTOS (`no_std` lib). `task.rs`, `sched.rs`, `ring.rs` are host-testable; `arch/` and `sync.rs` are Cortex-M33 only
