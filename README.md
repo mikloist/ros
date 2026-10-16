@@ -3,7 +3,11 @@
 Small preemptive RTOS kernel for the Raspberry Pi Pico 2 W (RP2350), for me to understand how a kernel works: context switching, scheduling, time, synchronization, and later memory protection.
 
 # AI usage
-I used AI for this, especially for discovery work, as typing substitute and for testing harness. However basic design and code structure is my idea.
+I use AI as a tutor and pair programmer. The split:
+
+- Me: the design decisions (scope, Arm vs RISC-V, single core, static tasks, API and naming choices) and most of the kernel core (task frames, the scheduler, the ring buffer, wait lists), written by hand with AI explaining concepts and reviewing.
+- AI: the per-milestone design spec and plans, the test harness (host tests and on-board test binaries), board plumbing and demos. Before each plan it builds a throwaway reference kernel and runs it on the board, so the tests and hints are known to be achievable; that reference is deleted, not copied in.
+- AI also wrote some kernel pieces when I asked it to, e.g. the PendSV assembly, `start`, `sleep`/`now`, the timeout path in `tick`, and the shared list helpers. Every change goes through `cargo ktest` and the board tests.
 
 # Model
 Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cortex-m-rt`, `rp235x-hal`); the kernel is written from scratch.
