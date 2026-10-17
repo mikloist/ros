@@ -15,4 +15,4 @@ mod sync;
 #[cfg(target_arch = "arm")]
 pub use arch::{now, sleep, sleep_until, start, yield_now};
 #[cfg(target_arch = "arm")]
-pub use sync::{Queue, Semaphore, Timeout};
+pub use sync::{Mutex, MutexGuard, Queue, Semaphore, Timeout};

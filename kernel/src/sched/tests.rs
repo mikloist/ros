@@ -268,3 +268,159 @@ fn instant_math_rounds_durations_up_to_whole_ticks() {
     assert_eq!(at(15) - at(10), ms(5));
     assert_eq!(at(10) - at(15), ms(0), "earlier minus later is zero, not a wrap");
 }
+
+// ---- M4: mutex and priority inheritance ----
+
+fn mutex() -> Box<MutexCore> {
+    Box::new(MutexCore::new())
+}
+
+fn prio(t: *mut Task) -> u8 {
+    unsafe { (*t).current_priority }
+}
+
+#[test]
+fn free_mutex_is_taken_and_handed_back() {
+    let (mut s, _, t, _own) = sched_with(&[1]);
+    let mut m = mutex();
+    s.switch();
+    assert_eq!(unsafe { s.lock_current(&mut *m, None) }, Lock::Acquired);
+    assert_eq!(m.owner(), t[0]);
+    assert!(!unsafe { s.unlock_current(&mut *m) });
+    assert!(m.owner().is_null());
+}
+
+#[test]
+fn zero_timeout_on_held_mutex_does_not_block() {
+    let (mut s, _, t, _own) = sched_with(&[2, 1]);
+    let mut m = mutex();
+    assert_eq!(s.switch(), t[0]);
+    unsafe { s.lock_current(&mut *m, None) };
+    s.sleep_current(at(1));
+    assert_eq!(s.switch(), t[1]);
+    assert_eq!(unsafe { s.lock_current(&mut *m, Some(Duration::ZERO)) }, Lock::WouldBlock);
+    assert_eq!(prio(t[0]), 2, "a try-lock must not boost the owner");
+}
+
+#[test]
+#[should_panic(expected = "mutex locked twice by the same task")]
+fn locking_twice_from_the_same_task_panics() {
+    let (mut s, _, _, _own) = sched_with(&[1]);
+    let mut m = mutex();
+    s.switch();
+    unsafe {
+        s.lock_current(&mut *m, None);
+        s.lock_current(&mut *m, None);
+    }
+}
+
+/// Classic inversion: L owns the mutex, M is ready, H blocks on the mutex.
+/// Returns (sched, [L, M, H], mutex).
+fn inversion() -> (Sched, Vec<*mut Task>, Box<MutexCore>, Tasks) {
+    let (mut s, _, t, own) = sched_with(&[1, 2, 3]);
+    let mut m = mutex();
+    // H and M step aside so L can run and take the mutex.
+    assert_eq!(s.switch(), t[2]);
+    s.sleep_current(at(1));
+    assert_eq!(s.switch(), t[1]);
+    s.sleep_current(at(1));
+    assert_eq!(s.switch(), t[0]);
+    unsafe { s.lock_current(&mut *m, None) };
+    // Both wake; H preempts L and blocks on the mutex.
+    assert!(s.tick());
+    assert_eq!(s.switch(), t[2]);
+    assert_eq!(unsafe { s.lock_current(&mut *m, None) }, Lock::Blocked);
+    (s, t, m, own)
+}
+
+#[test]
+fn owner_inherits_the_waiters_priority_and_runs_before_medium() {
+    let (mut s, t, _m, _own) = inversion();
+    assert_eq!(prio(t[0]), 3, "L must run at H's priority");
+    assert_eq!(s.switch(), t[0], "M ran while H waited for L: priority inversion");
+}
+
+#[test]
+fn unlock_hands_over_and_restores_the_owner() {
+    let (mut s, t, mut m, _own) = inversion();
+    assert_eq!(s.switch(), t[0]);
+    assert!(unsafe { s.unlock_current(&mut *m) }, "H outranks L now: switch");
+    assert_eq!(m.owner(), t[2], "handed straight to the waiter");
+    assert_eq!(prio(t[0]), 1, "L back to its own priority");
+    assert_eq!(s.switch(), t[2]);
+    assert_eq!(s.switch(), t[2], "H keeps the CPU");
+}
+
+#[test]
+fn inheritance_follows_a_chain_of_mutexes() {
+    // L holds A. M holds B and blocks on A. H blocks on B: L must reach 3.
+    let (mut s, _, t, _own) = sched_with(&[1, 2, 3]);
+    let (mut a, mut b) = (mutex(), mutex());
+    assert_eq!(s.switch(), t[2]);
+    s.sleep_current(at(2));
+    assert_eq!(s.switch(), t[1]);
+    s.sleep_current(at(1));
+    assert_eq!(s.switch(), t[0]);
+    unsafe { s.lock_current(&mut *a, None) };
+    s.tick(); // M wakes
+    assert_eq!(s.switch(), t[1]);
+    unsafe {
+        s.lock_current(&mut *b, None);
+        s.lock_current(&mut *a, None); // M blocks on A: L -> 2
+    }
+    assert_eq!(prio(t[0]), 2);
+    s.switch();
+    s.tick(); // H wakes
+    assert_eq!(s.switch(), t[2]);
+    unsafe { s.lock_current(&mut *b, None) }; // H blocks on B: M -> 3, then L -> 3
+    assert_eq!(prio(t[1]), 3);
+    assert_eq!(prio(t[0]), 3, "boost did not propagate along the chain");
+}
+
+#[test]
+fn owner_keeps_the_boost_of_mutexes_it_still_holds() {
+    // L holds A and B; M waits on B, H waits on A. Unlocking A drops L to 2, not 1.
+    let (mut s, _, t, _own) = sched_with(&[1, 2, 3]);
+    let (mut a, mut b) = (mutex(), mutex());
+    assert_eq!(s.switch(), t[2]);
+    s.sleep_current(at(1));
+    assert_eq!(s.switch(), t[1]);
+    s.sleep_current(at(1));
+    assert_eq!(s.switch(), t[0]);
+    unsafe {
+        s.lock_current(&mut *a, None);
+        s.lock_current(&mut *b, None);
+    }
+    s.tick();
+    assert_eq!(s.switch(), t[2]);
+    unsafe { s.lock_current(&mut *a, None) };
+    assert_eq!(s.switch(), t[0], "boosted L outranks M");
+    s.sleep_current(at(2)); // L steps aside so M can block on B
+    assert_eq!(s.switch(), t[1]);
+    unsafe { s.lock_current(&mut *b, None) };
+    assert_eq!(prio(t[0]), 3);
+    s.switch();
+    s.tick(); // L wakes
+    assert_eq!(s.switch(), t[0]);
+    unsafe { s.unlock_current(&mut *a) };
+    assert_eq!(prio(t[0]), 2, "M still waits on B, which L holds");
+}
+
+#[test]
+fn timed_out_waiter_withdraws_its_boost() {
+    let (mut s, _, t, _own) = sched_with(&[1, 3]);
+    let mut m = mutex();
+    assert_eq!(s.switch(), t[1]);
+    s.sleep_current(at(1));
+    assert_eq!(s.switch(), t[0]);
+    unsafe { s.lock_current(&mut *m, None) };
+    s.tick();
+    assert_eq!(s.switch(), t[1]);
+    unsafe { s.lock_current(&mut *m, Some(ms(2))) };
+    assert_eq!(prio(t[0]), 3);
+    s.switch();
+    s.tick();
+    s.tick(); // H times out
+    assert_eq!(prio(t[0]), 1, "L kept the boost of a waiter that left");
+    assert_eq!(m.owner(), t[0]);
+}
