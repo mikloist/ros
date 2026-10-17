@@ -424,3 +424,29 @@ fn timed_out_waiter_withdraws_its_boost() {
     assert_eq!(prio(t[0]), 1, "L kept the boost of a waiter that left");
     assert_eq!(m.owner(), t[0]);
 }
+
+#[test]
+fn remaining_waiter_keeps_its_boost_when_another_times_out() {
+    // L holds the mutex; H (timed) and M (untimed) wait. H gives up: L drops to 2, not 1.
+    let (mut s, _, t, _own) = sched_with(&[1, 2, 3]);
+    let mut m = mutex();
+    assert_eq!(s.switch(), t[2]);
+    s.sleep_current(at(1));
+    assert_eq!(s.switch(), t[1]);
+    s.sleep_current(at(1));
+    assert_eq!(s.switch(), t[0]);
+    unsafe { s.lock_current(&mut *m, None) };
+    s.tick(); // H and M wake
+    assert_eq!(s.switch(), t[2]);
+    unsafe { s.lock_current(&mut *m, Some(ms(2))) }; // gives up at tick 3
+    assert_eq!(s.switch(), t[0], "boosted L outranks M");
+    s.sleep_current(at(2)); // L steps aside so M can block too
+    assert_eq!(s.switch(), t[1]);
+    unsafe { s.lock_current(&mut *m, None) };
+    assert_eq!(prio(t[0]), 3);
+    s.switch();
+    s.tick(); // L wakes
+    s.tick(); // H times out
+    assert_eq!(prio(t[0]), 2, "M still waits on the mutex L holds");
+    assert_eq!(m.owner(), t[0]);
+}
