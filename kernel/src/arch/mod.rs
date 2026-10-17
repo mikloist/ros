@@ -6,7 +6,9 @@ use core::arch::global_asm;
 use cortex_m::peripheral::scb::SystemHandler;
 use cortex_m::peripheral::syst::SystClkSource;
 
-use crate::sched::Sched;
+use core::time::Duration;
+
+use crate::sched::{Instant, Sched};
 use crate::task::{Stack, Task};
 
 /// The one scheduler. Only touch it through `with_sched`.
@@ -78,23 +80,23 @@ pub fn yield_now() {
     cortex_m::asm::isb();
 }
 
-/// Ticks (ms) since `start`.
-pub fn now() -> u64 {
+/// Time since `start` (1 ms ticks).
+pub fn now() -> Instant {
     // u64 is two words on a 32-bit core: read it with SysTick masked.
     with_sched(|s| s.now())
 }
 
-/// Sleeps until tick `tick`; returns at once if it is now or in the past.
-pub fn sleep_until(tick: u64) {
-    if with_sched(|s| s.sleep_current(tick)) {
-        yield_now(); // switch away now; we resume once `tick` wakes us
+/// Sleeps until `deadline`; returns at once if it is now or in the past.
+pub fn sleep_until(deadline: Instant) {
+    if with_sched(|s| s.sleep_current(deadline)) {
+        yield_now(); // switch away now; we resume once `deadline` wakes us
     }
 }
 
-/// Sleeps for `ms` ticks. Compute the deadline in the same critical section as
+/// Sleeps for `d`, rounded up to whole ticks. Compute the deadline in the same critical section as
 /// `sleep_current`, or a tick in between shortens the sleep.
-pub fn sleep(ms: u32) {
-    if with_sched(|s| s.sleep_current(s.now() + ms as u64)) {
+pub fn sleep(d: Duration) {
+    if with_sched(|s| s.sleep_current(s.now() + d)) {
         yield_now();
     }
 }

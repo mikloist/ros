@@ -5,11 +5,59 @@
 //! - Bit `p` of `bitmap` is set iff `ready[p]` is non-empty.
 //! - `sleeping` is sorted by `wake` ascending; equal `wake`s keep arrival order.
 //! - A task is in at most one list at a time, linked through `Task::next`.
+use core::ops::{Add, Sub};
 use core::ptr::null_mut;
+use core::time::Duration;
 
 use crate::task::{State, Task};
 
 pub(crate) const PRIOS: usize = 8;
+
+/// A point in time: whole ticks (1 ms) since `start`. A `u64` of milliseconds
+/// never wraps in practice (~584 million years), so later is always bigger.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct Instant(u64);
+
+impl Instant {
+    pub const ZERO: Instant = Instant(0);
+
+    /// Ticks since `start`.
+    pub const fn ticks(self) -> u64 {
+        self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn from_ticks(ticks: u64) -> Instant {
+        Instant(ticks)
+    }
+}
+
+/// A duration in whole ticks, rounded up: sleeping never ends early.
+fn to_ticks(d: Duration) -> u64 {
+    u64::try_from(d.as_micros().div_ceil(1000)).unwrap_or(u64::MAX)
+}
+
+impl Add<Duration> for Instant {
+    type Output = Instant;
+    fn add(self, d: Duration) -> Instant {
+        Instant(self.0.saturating_add(to_ticks(d)))
+    }
+}
+
+impl Sub<Duration> for Instant {
+    type Output = Instant;
+    fn sub(self, d: Duration) -> Instant {
+        Instant(self.0.saturating_sub(to_ticks(d)))
+    }
+}
+
+/// Time between two instants (zero if `earlier` is actually later).
+impl Sub for Instant {
+    type Output = Duration;
+    fn sub(self, earlier: Instant) -> Duration {
+        Duration::from_millis(self.0.saturating_sub(earlier.0))
+    }
+}
 
 #[derive(Clone, Copy)]
 struct List {
@@ -111,7 +159,7 @@ pub(crate) struct Sched {
     bitmap: u8,
     sleeping: *mut Task,
     current: *mut Task,
-    now: u64,
+    now: Instant,
 }
 
 impl Sched {
@@ -121,12 +169,12 @@ impl Sched {
             bitmap: 0,
             sleeping: null_mut(),
             current: null_mut(),
-            now: 0,
+            now: Instant::ZERO,
         }
     }
 
     /// Ticks since start.
-    pub(crate) fn now(&self) -> u64 {
+    pub(crate) fn now(&self) -> Instant {
         return self.now;
     }
 
@@ -186,7 +234,7 @@ impl Sched {
     /// Puts the current task to sleep until tick `until` (sorted into
     /// `sleeping`). Returns false and does nothing if `until <= now`.
     /// The caller pends PendSV when this returns true.
-    pub(crate) fn sleep_current(&mut self, until: u64) -> bool {
+    pub(crate) fn sleep_current(&mut self, until: Instant) -> bool {
         if until <= self.now {
             return false;
         }
@@ -205,7 +253,7 @@ impl Sched {
 
     /// Sorted insert into `sleeping` (ties keep arrival order). `state` says
     /// why the task waits: `Sleeping`, or `Blocked` for a timed wait.
-    unsafe fn insert_sleeper(&mut self, t: *mut Task, until: u64, state: State) {
+    unsafe fn insert_sleeper(&mut self, t: *mut Task, until: Instant, state: State) {
         unsafe {
             (*t).state = state;
             (*t).wake = until;
@@ -223,7 +271,7 @@ impl Sched {
     /// >= the current task's (preempt, or time slice over). False before the
     /// first switch.
     pub(crate) fn tick(&mut self) -> bool {
-        self.now += 1;
+        self.now.0 += 1;
         unsafe {
             while !self.sleeping.is_null() && (*self.sleeping).wake <= self.now {
                 let c = self.sleeping;
@@ -247,7 +295,11 @@ impl Sched {
     ///
     /// # Safety
     /// `wl` outlives the wait (sync objects are `static`).
-    pub(crate) unsafe fn block_current(&mut self, wl: *mut WaitList, timeout: Option<u64>) {
+    pub(crate) unsafe fn block_current(
+        &mut self,
+        wl: *mut WaitList,
+        timeout: Option<Duration>,
+    ) {
         assert!(self.current != null_mut(), "block_current: no running task");
         assert!(
             unsafe { (*self.current).state == State::Running },
@@ -264,7 +316,9 @@ impl Sched {
             // Most urgent first; stop before the first *less* urgent waiter,
             // so equal priorities stay in arrival order.
             let p = (*c).current_priority;
-            insert_where(&mut (*wl).head, c, by_wait_next, |o| (*o).current_priority < p);
+            insert_where(&mut (*wl).head, c, by_wait_next, |o| {
+                (*o).current_priority < p
+            });
 
             if let Some(v) = timeout {
                 self.insert_sleeper(c, self.now + v, State::Blocked);

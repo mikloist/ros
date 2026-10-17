@@ -4,7 +4,7 @@
 #![no_std]
 #![no_main]
 
-use kernel::{Stack, Task};
+use kernel::{Duration, Stack, Task};
 use rp235x_hal as hal;
 
 type Timer = hal::Timer<hal::timer::CopyableTimer0>;
@@ -22,7 +22,7 @@ fn sleeper() -> ! {
     for ms in [1u32, 2, 10, 100] {
         for _ in 0..3 {
             let t0 = micros();
-            kernel::sleep(ms);
+            kernel::sleep(Duration::from_millis(ms as u64));
             let dt = micros() - t0;
             defmt::info!("sleep({}) took {} us", ms, dt);
             // Wakes on tick now+ms, and "now" is somewhere inside the current tick.
@@ -34,14 +34,14 @@ fn sleeper() -> ! {
 
     let start = kernel::now();
     for k in 1..=10 {
-        kernel::sleep_until(start + 20 * k);
-        assert_eq!(kernel::now(), start + 20 * k, "periodic wakeup drifted");
+        kernel::sleep_until(start + Duration::from_millis(20 * k));
+        assert_eq!(kernel::now(), start + Duration::from_millis(20 * k), "periodic wakeup drifted");
     }
     defmt::info!("sleep_until: 10 periods of 20 ticks, no drift");
 
     let n = kernel::now();
-    kernel::sleep_until(n - 5);
-    assert!(kernel::now() - n <= 1, "sleep_until(past) blocked");
+    kernel::sleep_until(n - Duration::from_millis(5));
+    assert!(kernel::now() - n <= Duration::from_millis(1), "sleep_until(past) blocked");
 
     app::exit_ok()
 }

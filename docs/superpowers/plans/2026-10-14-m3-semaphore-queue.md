@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - Everything in the M0–M2 plans' Global Constraints still holds.
-- Timeouts are ticks (= ms) as `Option<u32>`: `None` waits forever, `Some(0)` never blocks.
+- Timeouts are `Option<Duration>` (`core::time::Duration`, re-exported as `kernel::Duration`): `None` waits forever, `Some(Duration::ZERO)` never blocks. Changed after the plan was written (was `Option<u32>` ticks); the test binaries are updated.
 - Handoff: a woken task receives the unit/item directly; it never re-competes for it.
 - **No lost wakeups:** "decide to wait" and "join the wait list" happen inside ONE `with_sched` call.
 - Only `give`, `try_send`, `try_recv` may be called from interrupt handlers.
@@ -38,7 +38,7 @@ pub struct Task {
 pub(crate) struct WaitList { head: *mut Task }
 impl WaitList { pub(crate) const fn new() -> Self; #[cfg(test)] pub(crate) fn is_empty(&self) -> bool; }
 impl Sched {
-    pub(crate) unsafe fn block_current(&mut self, wl: *mut WaitList, timeout: Option<u64>); // caller pends
+    pub(crate) unsafe fn block_current(&mut self, wl: *mut WaitList, timeout: Option<Duration>); // caller pends
     pub(crate) unsafe fn wake_one(&mut self, wl: *mut WaitList) -> *mut Task;             // null if none
     pub(crate) fn should_switch(&self) -> bool; // a ready task >= current priority
     // tick(): also times out Blocked sleepers; returns should_switch()
@@ -58,14 +58,14 @@ pub struct Timeout;                               // Debug, PartialEq, Eq, Clone
 pub struct Semaphore;                             // Sync
 impl Semaphore {
     pub const fn new(count: u32) -> Self;
-    pub fn take(&self, timeout: Option<u32>) -> Result<(), Timeout>;
+    pub fn take(&self, timeout: Option<Duration>) -> Result<(), Timeout>;
     pub fn give(&self);                           // ISR-safe
 }
 pub struct Queue<T, const N: usize>;              // Sync if T: Send
 impl<T, const N: usize> Queue<T, N> {
     pub const fn new() -> Self;
-    pub fn send(&self, item: T, timeout: Option<u32>) -> Result<(), T>; // Err returns the item
-    pub fn recv(&self, timeout: Option<u32>) -> Result<T, Timeout>;
+    pub fn send(&self, item: T, timeout: Option<Duration>) -> Result<(), T>; // Err returns the item
+    pub fn recv(&self, timeout: Option<Duration>) -> Result<T, Timeout>;
     pub fn try_send(&self, item: T) -> Result<(), T>;                   // ISR-safe
     pub fn try_recv(&self) -> Result<T, Timeout>;                       // ISR-safe
 }
@@ -370,15 +370,15 @@ fn waiter() -> ! {
     let t0 = kernel::now();
     assert_eq!(NEVER.take(Some(5)), Err(Timeout));
     assert_eq!(kernel::now() - t0, 5, "timed take did not last 5 ticks");
-    assert_eq!(NEVER.take(Some(0)), Err(Timeout), "try-take blocked or succeeded");
+    assert_eq!(NEVER.take(Some(Duration::ZERO)), Err(Timeout), "try-take blocked or succeeded");
     defmt::info!("timeout ok");
 
     // Counting: gives with nobody waiting accumulate.
     COUNTED.give();
     COUNTED.give();
-    assert_eq!(COUNTED.take(Some(0)), Ok(()));
-    assert_eq!(COUNTED.take(Some(0)), Ok(()));
-    assert_eq!(COUNTED.take(Some(0)), Err(Timeout), "count went above 2");
+    assert_eq!(COUNTED.take(Some(Duration::ZERO)), Ok(()));
+    assert_eq!(COUNTED.take(Some(Duration::ZERO)), Ok(()));
+    assert_eq!(COUNTED.take(Some(Duration::ZERO)), Err(Timeout), "count went above 2");
     defmt::info!("counting ok");
 
     // Interrupt -> task.
@@ -536,13 +536,13 @@ git commit -m "test(m3): wait-list/ring host tests, semaphore/queue board tests 
 **Shape of every call:** one `with_sched` that either finishes the operation or calls `block_current`; then, outside it, `yield_now()` if needed; after resuming, read `timed_out` (in another `with_sched`).
 
 **Semaphore** (`UnsafeCell<{ count, waiters }>`, `unsafe impl Sync`)
-- `take`: `count > 0` → decrement, `Ok`. Else `Some(0)` → `Err(Timeout)`. Else block on `waiters`, yield, then `Err` if `timed_out` else `Ok` (the giver handed the unit over).
+- `take`: `count > 0` → decrement, `Ok`. Else `Some(Duration::ZERO)` → `Err(Timeout)`. Else block on `waiters`, yield, then `Err` if `timed_out` else `Ok` (the giver handed the unit over).
 - `give`: `wake_one(waiters)`; if nobody, `count += 1`. If `should_switch()`, `yield_now()` (works from an ISR too: it only pends).
 
 **Queue** (`UnsafeCell<{ ring, receivers, senders }>`, `unsafe impl<T: Send> Sync`)
-- `send`: a receiver waits → write the item into its `msg` slot (`*mut Option<T>`), wake it. Else ring has room → push. Else `Some(0)` → `Err(item)`. Else park the item in a local `Option<T>` on your stack, point `current.msg` at it, block on `senders`. After a timeout, take it back out and return `Err(item)`.
-- `recv`: ring non-empty → pop; if a sender is parked, wake it and move its item into the ring. Else `Some(0)` → `Err(Timeout)`. Else point `current.msg` at a local `Option<T>`, block on `receivers`; after waking, `Ok(slot.take())`.
-- `try_send` / `try_recv` = timeout `Some(0)`.
+- `send`: a receiver waits → write the item into its `msg` slot (`*mut Option<T>`), wake it. Else ring has room → push. Else `Some(Duration::ZERO)` → `Err(item)`. Else park the item in a local `Option<T>` on your stack, point `current.msg` at it, block on `senders`. After a timeout, take it back out and return `Err(item)`.
+- `recv`: ring non-empty → pop; if a sender is parked, wake it and move its item into the ring. Else `Some(Duration::ZERO)` → `Err(Timeout)`. Else point `current.msg` at a local `Option<T>`, block on `receivers`; after waking, `Ok(slot.take())`.
+- `try_send` / `try_recv` = timeout `Some(Duration::ZERO)`.
 
 **Hints**
 - The lost wakeup: if `take` checks `count == 0` in one critical section and blocks in a second, an ISR `give` landing between them increments `count` while you go to sleep, so you wait for a unit that is already there. One critical section for both.
@@ -560,5 +560,5 @@ git commit -m "test(m3): wait-list/ring host tests, semaphore/queue board tests 
 
 - [ ] Review Tasks 2–5 against this plan and spec section 4.
 - [ ] Run all host tests and board binaries.
-- [ ] Spec: interrupt→task via TIMER0 alarm; timeouts `Option<u32>` ticks; `send` returns the item on failure; new `Task` fields; `Ring`.
+- [ ] Spec: interrupt→task via TIMER0 alarm; timeouts `Option<Duration>`; `send` returns the item on failure; new `Task` fields; `Ring`.
 - [ ] Commit.

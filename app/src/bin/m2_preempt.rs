@@ -9,7 +9,7 @@
 #![no_main]
 
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
-use kernel::{Stack, Task};
+use kernel::{Duration, Stack, Task};
 
 static SPIN_A: AtomicU32 = AtomicU32::new(0);
 static SPIN_B: AtomicU32 = AtomicU32::new(0);
@@ -17,9 +17,9 @@ static STACK_A: Stack<256> = Stack::new();
 static STACK_B: Stack<256> = Stack::new();
 static STACK_HIGH: Stack<1024> = Stack::new();
 
-const PERIOD: u64 = 4;
-const PERIODS: u64 = 50;
-const SLICE_WINDOW: u64 = 100;
+const PERIOD: Duration = Duration::from_millis(4);
+const PERIODS: u32 = 50;
+const SLICE_WINDOW: Duration = Duration::from_millis(100);
 
 fn spin_a() -> ! {
     loop {
@@ -48,9 +48,9 @@ fn high() -> ! {
     // counts is harmless next to millions per window.
     SPIN_A.store(0, Relaxed);
     SPIN_B.store(0, Relaxed);
-    kernel::sleep(SLICE_WINDOW as u32);
+    kernel::sleep(SLICE_WINDOW);
     let (a, b) = (SPIN_A.load(Relaxed), SPIN_B.load(Relaxed));
-    defmt::info!("phase 2: spin_a={} spin_b={} over {} ticks", a, b, SLICE_WINDOW);
+    defmt::info!("phase 2: spin_a={} spin_b={} over {} ms", a, b, SLICE_WINDOW.as_millis() as u32);
     assert!(a > 0 && b > 0, "a spinner never ran: no time slicing");
     assert!(a.min(b) * 2 > a.max(b), "round robin unfair: {} vs {}", a, b);
     app::exit_ok()

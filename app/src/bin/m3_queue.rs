@@ -5,7 +5,7 @@
 #![no_std]
 #![no_main]
 
-use kernel::{Queue, Semaphore, Stack, Task, Timeout};
+use kernel::{Duration, Queue, Semaphore, Stack, Task, Timeout};
 
 const ITEMS: u32 = 200;
 static Q: Queue<u32, 4> = Queue::new();
@@ -24,12 +24,12 @@ fn producer() -> ! {
     }
     assert_eq!(Q.try_send(7), Err(7), "try_send on a full queue");
     let t0 = kernel::now();
-    assert_eq!(Q.send(8, Some(3)), Err(8), "timed send on a full queue");
-    assert_eq!(kernel::now() - t0, 3, "timed send did not last 3 ticks");
+    assert_eq!(Q.send(8, Some(Duration::from_millis(3))), Err(8), "timed send on a full queue");
+    assert_eq!(kernel::now() - t0, Duration::from_millis(3), "timed send did not last 3 ticks");
     defmt::info!("full queue: try_send rejected, send timed out and returned the item");
     FILLED.give();
     loop {
-        kernel::sleep(1000);
+        kernel::sleep(Duration::from_secs(1));
     }
 }
 
@@ -37,7 +37,7 @@ fn consumer() -> ! {
     for i in 0..ITEMS {
         assert_eq!(Q.recv(None), Ok(i), "items out of order");
         if i % 50 == 49 {
-            kernel::sleep(1); // let the producer fill the queue and block
+            kernel::sleep(Duration::from_millis(1)); // let the producer fill the queue and block
         }
     }
     defmt::info!("{} items in order", ITEMS);
@@ -46,8 +46,8 @@ fn consumer() -> ! {
         assert_eq!(Q.try_recv(), Ok(1000 + i));
     }
     let t0 = kernel::now();
-    assert_eq!(Q.recv(Some(3)), Err(Timeout), "recv on an empty queue");
-    assert_eq!(kernel::now() - t0, 3, "timed recv did not last 3 ticks");
+    assert_eq!(Q.recv(Some(Duration::from_millis(3))), Err(Timeout), "recv on an empty queue");
+    assert_eq!(kernel::now() - t0, Duration::from_millis(3), "timed recv did not last 3 ticks");
     defmt::info!("empty queue: recv timed out");
     app::exit_ok()
 }

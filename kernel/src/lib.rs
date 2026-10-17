@@ -4,6 +4,8 @@
 mod ring;
 mod sched;
 mod task;
+pub use core::time::Duration;
+pub use sched::Instant;
 pub use task::{Stack, Task};
 
 #[cfg(target_arch = "arm")]

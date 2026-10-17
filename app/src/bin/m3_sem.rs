@@ -5,7 +5,7 @@
 #![no_main]
 
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
-use kernel::{Semaphore, Stack, Task, Timeout};
+use kernel::{Duration, Semaphore, Stack, Task, Timeout};
 use rp235x_hal as hal;
 use hal::fugit::MicrosDurationU32;
 use hal::pac::interrupt;
@@ -45,17 +45,17 @@ fn TIMER0_IRQ_0() {
 fn waiter() -> ! {
     // Timeout: nobody ever gives NEVER.
     let t0 = kernel::now();
-    assert_eq!(NEVER.take(Some(5)), Err(Timeout));
-    assert_eq!(kernel::now() - t0, 5, "timed take did not last 5 ticks");
-    assert_eq!(NEVER.take(Some(0)), Err(Timeout), "try-take blocked or succeeded");
+    assert_eq!(NEVER.take(Some(Duration::from_millis(5))), Err(Timeout));
+    assert_eq!(kernel::now() - t0, Duration::from_millis(5), "timed take did not last 5 ticks");
+    assert_eq!(NEVER.take(Some(Duration::ZERO)), Err(Timeout), "try-take blocked or succeeded");
     defmt::info!("timeout ok");
 
     // Counting: gives with nobody waiting accumulate.
     COUNTED.give();
     COUNTED.give();
-    assert_eq!(COUNTED.take(Some(0)), Ok(()));
-    assert_eq!(COUNTED.take(Some(0)), Ok(()));
-    assert_eq!(COUNTED.take(Some(0)), Err(Timeout), "count went above 2");
+    assert_eq!(COUNTED.take(Some(Duration::ZERO)), Ok(()));
+    assert_eq!(COUNTED.take(Some(Duration::ZERO)), Ok(()));
+    assert_eq!(COUNTED.take(Some(Duration::ZERO)), Err(Timeout), "count went above 2");
     defmt::info!("counting ok");
 
     // Interrupt -> task.
@@ -68,7 +68,7 @@ fn waiter() -> ! {
     }
     let mut worst = 0;
     for _ in 0..ROUNDS {
-        assert_eq!(IRQ.take(Some(10)), Ok(()), "interrupt give never arrived");
+        assert_eq!(IRQ.take(Some(Duration::from_millis(10))), Ok(()), "interrupt give never arrived");
         let latency = micros().wrapping_sub(GIVEN_AT.load(Relaxed));
         worst = worst.max(latency);
     }

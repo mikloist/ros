@@ -76,7 +76,7 @@ pub struct Task {
 - Idle task (priority 0): `loop { wfi() }`.
 - SysTick at 1 kHz from the core clock. `u64` tick count, read inside a critical section; never wraps.
 - Sleepers sit in a list sorted by wake tick; SysTick only examines the head, wakes due tasks, rotates round-robin, pends PendSV if needed.
-- API: `now() -> u64`, `sleep(ms)`, `sleep_until(tick)`, `yield_now()`.
+- API: `now() -> Instant`, `sleep(Duration)`, `sleep_until(Instant)`, `yield_now()`. `Instant` is a newtype over the `u64` tick count (never wraps); `Duration` is `core::time::Duration`, rounded up to whole ticks so a sleep never ends early.
 - Critical section: `cortex_m::interrupt::free` (save PRIMASK, `cpsid i`, restore). All scheduler state lives in one `Sched` value in `sched.rs`; `arch::with_sched` is the only way to reach it, always inside a critical section. The `critical-section` crate implementation comes from `cortex-m`'s `critical-section-single-core` feature (needed by `defmt-rtt`).
 - Exception priorities: SysTick `0x80`, PendSV `0xFF`. SysTick can interrupt PendSV, hence the critical section in `kernel_switch`.
 - The running task is in no list; `switch()` requeues it at its list's tail only if still `Running` (a task woken before its switch is already queued).
@@ -86,7 +86,7 @@ pub struct Task {
 
 Common:
 - Each object has a wait list ordered by priority, FIFO within a priority.
-- Blocking calls take `timeout: Option<u64>` (ticks; `None` = forever). Timed waiters are on both the wait list and the sleep list; whichever fires first removes the task from both. Timeout returns `Err(Timeout)`.
+- Blocking calls take `timeout: Option<Duration>` (`None` = forever, `Some(Duration::ZERO)` = never block). Timed waiters are on both the wait list and the sleep list; whichever fires first removes the task from both. Timeout returns `Err(Timeout)`.
 - Handoff on wake: the woken task receives the unit/lock/item directly, so no other task can grab it first.
 
 Semaphore (counting): `new(count)`, `take(timeout) -> Result<(), Timeout>`, `give()`. `give()` may be called from interrupt handlers.

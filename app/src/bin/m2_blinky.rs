@@ -5,7 +5,7 @@
 #![no_main]
 
 use embedded_hal::digital::StatefulOutputPin;
-use kernel::{Stack, Task};
+use kernel::{Duration, Stack, Task};
 use rp235x_hal as hal;
 
 type Led = hal::gpio::Pin<hal::gpio::bank0::Gpio15, hal::gpio::FunctionSioOutput, hal::gpio::PullDown>;
@@ -18,9 +18,9 @@ fn led() -> ! {
     // SAFETY: written once in `main` before the kernel starts; only this task reads it.
     let mut pin = unsafe { (*&raw mut LED).take() }.unwrap();
     loop {
-        kernel::sleep(500);
+        kernel::sleep(Duration::from_millis(500));
         pin.toggle().unwrap();
-        defmt::info!("led {} at tick {}", if pin.is_set_high().unwrap() { "on " } else { "off" }, kernel::now());
+        defmt::info!("led {} at tick {}", if pin.is_set_high().unwrap() { "on " } else { "off" }, kernel::now().ticks());
     }
 }
 
