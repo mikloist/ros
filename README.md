@@ -29,7 +29,7 @@ Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cort
     - `Instant` = whole ticks since boot (`u64`, never wraps); durations are `core::time::Duration`, rounded up to whole ticks
     - Sleep list sorted by wake tick; SysTick only looks at the head
 - Idle task runs `wfi` when nothing else is ready
-- Semaphore and queue (in progress, M3)
+- Semaphore and queue
     - Blocking calls take `Option<Duration>`: `None` waits forever, `Some(Duration::ZERO)` never blocks
     - Wait lists in priority order, FIFO on ties; the woken task gets the unit/item directly
     - A timed waiter is on the wait list and the sleep list at once; whichever fires first removes it from the other

@@ -47,7 +47,11 @@ ros/
 pub struct Task {
     sp: *mut u32,              // saved PSP
     stack_limit: *mut u32,     // PSPLIM
-    state: State,              // Ready | Running | Sleeping (M3: Blocked, M5: Dead)
+    state: State,              // Ready | Running | Sleeping | Blocked (M5: Dead)
+    waiting_on: *mut WaitList, // wait list while Blocked
+    wait_next: *mut Task,      // link inside that wait list (a timed waiter also uses `next` for the sleep list)
+    timed_out: bool,           // set by `tick` when the timeout beat the event
+    msg: *mut (),              // queue handoff: points at an Option<T> on this task's stack
     current_priority: u8,      // effective (M4 inheritance may raise it)
     original_priority: u8,     // declared priority; M4 restores to it
     wake: u64,                 // wake tick while Sleeping
@@ -99,6 +103,8 @@ Semaphore (counting): `new(count)`, `take(timeout) -> Result<(), Timeout>`, `giv
 
 `Queue<T, N>`: fixed ring buffer. `send(item, timeout)`, `recv(timeout)` block on full/empty. `try_send`, `try_recv` never block and may be called from interrupt handlers.
 
+Queue storage is `Ring<T, N>` (`ring.rs`, host-tested): `[MaybeUninit<T>; N]` + head + len, drops leftover items. Direct handoff: a sender writes into a blocked receiver's `msg` slot; a sender blocked on full parks its item in its own slot, and the receiver that frees space moves it into the ring. Whoever makes another task ready checks `should_switch()`; whoever blocks itself always yields. Deciding to wait and calling `block_current` happen in one critical section (no lost wakeups).
+
 Host tests: wait-list order, timeout vs. event race, ring wraparound, inheritance chain, restore with two held mutexes.
 
 ## 5. Protection (level 4)
@@ -128,7 +134,7 @@ Fault policy (M2–M4: every fault escalates to HardFault; probe-rs catches it, 
 | M0 | Workspace, `rp235x-hal` boot, `defmt` | GP15 LED blinks via busy-wait; pass/fail exit mechanism confirmed |
 | M1 | Cooperative context switch | Two tasks alternate logs via `yield_now` |
 | M2 | SysTick, priorities, sleep, idle | Sleep timing within 1 tick; higher-priority wakeup preempts immediately |
-| M3 | Semaphore, queue, interrupt → task | GPIO button IRQ `give()`s to a task; producer/consumer over a queue |
+| M3 | Semaphore, queue, interrupt → task | TIMER0 alarm IRQ `give()`s to a task (worst wakeup latency 11–12 µs; a timer replaces the planned GPIO button so the test runs unattended); producer/consumer over a 4-slot queue incl. full/empty timeouts |
 | M4 | Mutex + priority inheritance | Classic low/medium/high inversion scenario resolved; asserts check ordering |
 | M5 | SVC + unprivileged tasks | Whole API via syscalls; unprivileged SysTick write faults and kills only that task |
 | M6 | MPU | Bad pointer kills only the offending task; others keep running |
