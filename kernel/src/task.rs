@@ -122,6 +122,8 @@ impl Task {
             msg: core::ptr::null_mut(),
             held: core::ptr::null_mut(),
             blocked_mutex: core::ptr::null_mut(),
+            privileged: false,
+            syscall_frame: core::ptr::null_mut(),
             next: core::ptr::null_mut(),
             name: "t",
         }

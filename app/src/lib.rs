@@ -3,7 +3,8 @@
 
 use hal::Clock;
 use rp235x_hal as hal;
-use {defmt_rtt as _, panic_probe as _};
+// `kernel` provides the critical-section impl every binary needs (defmt, HAL).
+use {defmt_rtt as _, kernel as _};
 
 pub use hal::entry;
 
@@ -40,6 +41,16 @@ pub fn init() -> Board {
     let sio = hal::Sio::new(pac.SIO);
     let pins = hal::gpio::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
     Board { pins, timer, sys_hz: clocks.system_clock.freq().to_Hz() }
+}
+
+/// Any panic, in a task (privileged or not), the kernel or `main`, ends the
+/// test with exit 1. Semihosting works unprivileged; a fault (panic-probe's
+/// way) would only kill the panicking task now.
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    defmt::error!("{}", defmt::Display2Format(info));
+    cortex_m_semihosting::debug::exit(cortex_m_semihosting::debug::EXIT_FAILURE);
+    loop {}
 }
 
 /// End a test binary successfully: `probe-rs run` exits 0.

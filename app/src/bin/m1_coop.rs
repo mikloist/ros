@@ -165,6 +165,10 @@ fn task_b() -> ! {
 #[app::entry]
 fn main() -> ! {
     let b = app::init();
-    let mut tasks = [Task::new("a", 1, task_a, &STACK_A), Task::new("b", 1, task_b, &STACK_B)];
+    // Privileged: `fp_regs_survive_switch` pends PendSV by writing ICSR itself.
+    let mut tasks = [
+        Task::new("a", 1, task_a, &STACK_A).privileged(),
+        Task::new("b", 1, task_b, &STACK_B).privileged(),
+    ];
     kernel::start(&mut tasks, b.sys_hz)
 }

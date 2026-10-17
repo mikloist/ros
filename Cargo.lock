@@ -22,7 +22,6 @@ dependencies = [
  "defmt-rtt",
  "embedded-hal 1.0.0",
  "kernel",
- "panic-probe",
  "rp235x-hal",
 ]
 
@@ -465,6 +464,8 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "cortex-m",
+ "critical-section",
+ "defmt",
 ]
 
 [[package]]
@@ -566,16 +567,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "panic-probe"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd402d00b0fb94c5aee000029204a46884b1262e0c443f166d86d2c0747e1a1a"
-dependencies = [
- "cortex-m",
- "defmt",
 ]
 
 [[package]]

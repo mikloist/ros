@@ -450,3 +450,50 @@ fn remaining_waiter_keeps_its_boost_when_another_times_out() {
     assert_eq!(prio(t[0]), 2, "M still waits on the mutex L holds");
     assert_eq!(m.owner(), t[0]);
 }
+
+// ---- M5: syscalls and task kill ----
+
+#[test]
+fn syscall_timeouts_round_up_and_survive_the_round_trip() {
+    use crate::sched::{ticks_to_timeout, timeout_to_ticks};
+    assert_eq!(timeout_to_ticks(None), u64::MAX, "forever");
+    assert_eq!(timeout_to_ticks(Some(Duration::ZERO)), 0, "try: never blocks");
+    assert_eq!(timeout_to_ticks(Some(Duration::from_micros(1))), 1, "a wait must never end early");
+    assert_eq!(timeout_to_ticks(Some(ms(5))), 5);
+    assert_ne!(timeout_to_ticks(Some(Duration::MAX)), u64::MAX, "a huge timeout is not forever");
+    for t in [None, Some(Duration::ZERO), Some(ms(1)), Some(ms(5))] {
+        assert_eq!(ticks_to_timeout(timeout_to_ticks(t)), t);
+    }
+}
+
+#[test]
+fn killed_task_never_runs_again() {
+    let (mut s, _, t, _own) = sched_with(&[1, 1]);
+    assert_eq!(s.switch(), t[0]);
+    s.kill_current();
+    assert_eq!(s.switch(), t[1]);
+    assert_eq!(s.switch(), t[1], "dead task was queued again");
+    s.tick();
+    assert_eq!(s.switch(), t[1]);
+}
+
+#[test]
+fn killed_owner_leaves_its_mutex_locked() {
+    let (mut s, _, t, _own) = sched_with(&[1, 2]);
+    let mut m = mutex();
+    assert_eq!(s.switch(), t[1]);
+    s.sleep_current(at(1));
+    assert_eq!(s.switch(), t[0]);
+    unsafe { s.lock_current(&mut *m, None) };
+    s.kill_current();
+    s.switch();
+    s.tick(); // the waiter wakes and tries the dead task's mutex
+    assert_eq!(s.switch(), t[1]);
+    assert_eq!(unsafe { s.lock_current(&mut *m, Some(ms(2))) }, Lock::Blocked);
+    assert_eq!(prio(t[0]), 2, "boosting a dead owner is harmless");
+    s.switch();
+    s.tick();
+    s.tick();
+    assert!(unsafe { (*t[1]).timed_out }, "lock on a dead task's mutex must time out");
+    assert_eq!(m.owner(), t[0], "mutex stays locked");
+}
