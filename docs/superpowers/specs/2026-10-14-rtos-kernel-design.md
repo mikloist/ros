@@ -52,8 +52,10 @@ pub struct Task {
     wait_next: *mut Task,      // link inside that wait list (a timed waiter also uses `next` for the sleep list)
     timed_out: bool,           // set by `tick` when the timeout beat the event
     msg: *mut (),              // queue handoff: points at an Option<T> on this task's stack
-    current_priority: u8,      // effective (M4 inheritance may raise it)
-    original_priority: u8,     // declared priority; M4 restores to it
+    current_priority: u8,      // effective; the scheduler uses this (raised by inheritance)
+    original_priority: u8,     // declared priority; never changes
+    held: *mut MutexCore,      // mutexes this task owns, linked via MutexCore::next_held
+    blocked_mutex: *mut MutexCore, // mutex this task is blocked on, else null
     wake: u64,                 // wake tick while Sleeping
     next: *mut Task,           // link in the one list the task is in
     name: &'static str,
@@ -95,17 +97,18 @@ Common:
 
 Semaphore (counting): `new(count)`, `take(timeout) -> Result<(), Timeout>`, `give()`. `give()` may be called from interrupt handlers.
 
-`Mutex<T>`: `lock(timeout) -> Result<Guard<T>, Timeout>`; guard unlocks on drop.
-- Tracks owner. Locking again from the owner panics (not recursive).
-- Priority inheritance: a higher-priority waiter raises the owner's effective priority; propagates through the owner's `blocked_on` mutex chain.
-- Unlock sets the owner's `current_priority` to max(`original_priority`, highest waiter on any other mutex it still holds).
-- Task context only.
+`Mutex<T>`: `lock(timeout) -> Result<MutexGuard<T>, Timeout>`; the guard derefs to `T` and unlocks on drop. `MutexGuard` is `!Send`, so only the owner unlocks.
+- Kernel half `MutexCore { owner, waiters, next_held }`. Locking again from the owner panics (not recursive).
+- Unlock hands the mutex straight to the most urgent waiter (no re-contention).
+- Priority inheritance, recomputed rather than undone: `refresh_priority(t)` sets `t` to max(`original_priority`, head waiter of each mutex in `t.held`) and, if that changed and `t` is blocked on a mutex, repeats for that mutex's owner (an iterative chain walk; stops at the first unchanged priority, so it terminates even in a deadlock cycle). Called on block (for the owner), unlock (for the old owner) and timeout (for the owner the waiter left).
+- `set_priority` keeps the task in the right list: a Ready task moves to its new `ready[p]`; a Blocked task is re-sorted in its wait list.
+- Task context only (`lock` asserts thread mode). Deadlocks are not detected.
 
 `Queue<T, N>`: fixed ring buffer. `send(item, timeout)`, `recv(timeout)` block on full/empty. `try_send`, `try_recv` never block and may be called from interrupt handlers.
 
 Queue storage is `Ring<T, N>` (`ring.rs`, host-tested): `[MaybeUninit<T>; N]` + head + len, drops leftover items. Direct handoff: a sender writes into a blocked receiver's `msg` slot; a sender blocked on full parks its item in its own slot, and the receiver that frees space moves it into the ring. Whoever makes another task ready checks `should_switch()`; whoever blocks itself always yields. Deciding to wait and calling `block_current` happen in one critical section (no lost wakeups).
 
-Host tests: wait-list order, timeout vs. event race, ring wraparound, inheritance chain, restore with two held mutexes.
+Host tests: wait-list order, timeout vs. event race, ring wraparound, inheritance (owner boost, handover/restore, chain, boost kept from another held mutex, timed-out waiter withdraws its boost, remaining waiter keeps its boost).
 
 ## 5. Protection (level 4)
 
@@ -135,7 +138,7 @@ Fault policy (M2–M4: every fault escalates to HardFault; probe-rs catches it, 
 | M1 | Cooperative context switch | Two tasks alternate logs via `yield_now` |
 | M2 | SysTick, priorities, sleep, idle | Sleep timing within 1 tick; higher-priority wakeup preempts immediately |
 | M3 | Semaphore, queue, interrupt → task | TIMER0 alarm IRQ `give()`s to a task (worst wakeup latency 11–12 µs; a timer replaces the planned GPIO button so the test runs unattended); producer/consumer over a 4-slot queue incl. full/empty timeouts |
-| M4 | Mutex + priority inheritance | Classic low/medium/high inversion scenario resolved; asserts check ordering |
+| M4 | Mutex + priority inheritance | Low/medium/high inversion: H waits 8 ms (L's critical section) instead of ~200 ms (mutant without inheritance: 201 ms, fails); two time-sliced tasks lose no updates (200/200); try-lock and timed lock fail on a held mutex |
 | M5 | SVC + unprivileged tasks | Whole API via syscalls; unprivileged SysTick write faults and kills only that task |
 | M6 | MPU | Bad pointer kills only the offending task; others keep running |
 | M7 | Multicore (own spec) | Tasks run on both cores; a `give()` on one core wakes a task on the other |

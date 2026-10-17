@@ -34,7 +34,11 @@ Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cort
     - Wait lists in priority order, FIFO on ties; the woken task gets the unit/item directly
     - A timed waiter is on the wait list and the sleep list at once; whichever fires first removes it from the other
     - `give`, `try_send`, `try_recv` are safe from interrupt handlers
-- Planned: mutex with priority inheritance (M4), SVC syscalls + unprivileged tasks (M5), MPU isolation (M6), multicore (M7), then Wi-Fi via the CYW43 chip
+- Mutex with priority inheritance
+    - `lock(timeout)` returns a guard that derefs to the data and unlocks on drop; not recursive, task context only
+    - The owner runs at the priority of its most urgent waiter, through chains of mutexes; recomputed on block, unlock and timeout
+    - Unlock hands the mutex directly to the most urgent waiter
+- Planned: SVC syscalls + unprivileged tasks (M5), MPU isolation (M6), multicore (M7), then Wi-Fi via the CYW43 chip
 
 # Layout
 - `kernel/`: the RTOS (`no_std` lib). `task.rs`, `sched.rs`, `ring.rs` are host-testable; `arch/` and `sync.rs` are Cortex-M33 only
@@ -50,4 +54,5 @@ Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cort
     - `m2_sleep`: sleeps last their tick count, periodic `sleep_until` has no drift
     - `m2_preempt`: a high-priority task preempts on time, equal priorities share the CPU
     - `m3_sem`, `m3_queue`: timeouts, counting, interrupt -> task wakeup (TIMER0 alarm), queue full/empty
+    - `m4_inversion`, `m4_mutex`: priority inversion resolved, mutual exclusion under time slicing, mutex timeouts
 - Demos: `m1_blinky` (cooperative, polls), `m2_blinky` (sleeps); external LED on GP15
