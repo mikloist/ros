@@ -1,5 +1,6 @@
-use core::cell::UnsafeCell;
+use crate::sched::{Lock, MutexCore};
 use core::time::Duration;
+use core::{cell::UnsafeCell, marker::PhantomData};
 
 use crate::{arch::with_sched, ring::Ring, sched::WaitList, yield_now};
 
@@ -182,5 +183,79 @@ impl<T, const N: usize> Queue<T, N> {
     }
     pub fn try_recv(&self) -> Result<T, Timeout> {
         self.recv(Some(Duration::ZERO))
+    }
+}
+
+pub struct Mutex<T> {
+    core: UnsafeCell<MutexCore>,
+    data: UnsafeCell<T>,
+}
+
+pub struct MutexGuard<'a, T> {
+    mutex: &'a Mutex<T>,
+    _not_send: PhantomData<*const ()>,
+}
+
+impl<'a, T> MutexGuard<'a, T> {
+    const fn new(mutex: &'a Mutex<T>) -> Self {
+        Self {
+            mutex: mutex,
+            _not_send: PhantomData,
+        }
+    }
+}
+
+impl<T> core::ops::Deref for MutexGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // SAFETY: the guard exists only while this task owns the mutex.
+        unsafe { &*self.mutex.data.get() }
+    }
+}
+
+impl<T> core::ops::DerefMut for MutexGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: as above; `&mut self` rules out other borrows through this guard.
+        unsafe { &mut *self.mutex.data.get() }
+    }
+}
+
+impl<T> Drop for MutexGuard<'_, T> {
+    fn drop(&mut self) {
+        if with_sched(|s| unsafe { s.unlock_current(self.mutex.core.get()) }) {
+            yield_now();
+        }
+    }
+}
+
+unsafe impl<T: Send> Sync for Mutex<T> {}
+
+impl<T> Mutex<T> {
+    pub const fn new(data: T) -> Self {
+        Self {
+            core: UnsafeCell::new(MutexCore::new()),
+            data: UnsafeCell::new(data),
+        }
+    }
+    pub fn lock(&self, timeout: Option<Duration>) -> Result<MutexGuard<'_, T>, Timeout> {
+        use cortex_m::peripheral::{SCB, scb::VectActive};
+        assert!(
+            SCB::vect_active() == VectActive::ThreadMode,
+            "Mutex::lock from an interrupt"
+        );
+        let s = with_sched(|s| unsafe { s.lock_current(self.core.get(), timeout) });
+        match s {
+            Lock::Acquired => Ok(MutexGuard::new(self)),
+            Lock::WouldBlock => Err(Timeout),
+            Lock::Blocked => {
+                yield_now();
+                let timed_out = with_sched(|s| unsafe { (*s.current()).timed_out });
+                if timed_out {
+                    Err(Timeout)
+                } else {
+                    Ok(MutexGuard::new(self))
+                }
+            }
+        }
     }
 }

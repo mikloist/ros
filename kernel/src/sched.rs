@@ -281,6 +281,11 @@ impl Sched {
                     remove(&mut (*(*c).waiting_on).head, c, by_wait_next);
                     (*c).waiting_on = null_mut();
                     (*c).timed_out = true;
+                    let m = (*c).blocked_mutex;
+                    if !m.is_null() {
+                        (*c).blocked_mutex = null_mut();
+                        self.refresh_priority((*m).owner);
+                    }
                 }
                 self.make_ready(c);
             }
@@ -295,11 +300,7 @@ impl Sched {
     ///
     /// # Safety
     /// `wl` outlives the wait (sync objects are `static`).
-    pub(crate) unsafe fn block_current(
-        &mut self,
-        wl: *mut WaitList,
-        timeout: Option<Duration>,
-    ) {
+    pub(crate) unsafe fn block_current(&mut self, wl: *mut WaitList, timeout: Option<Duration>) {
         assert!(self.current != null_mut(), "block_current: no running task");
         assert!(
             unsafe { (*self.current).state == State::Running },
@@ -377,6 +378,146 @@ impl WaitList {
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
         self.head.is_null()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum Lock {
+    Acquired,
+    WouldBlock,
+    Blocked,
+}
+pub(crate) struct MutexCore {
+    owner: *mut Task,
+    waiters: WaitList,
+    next_held: *mut MutexCore,
+}
+
+impl MutexCore {
+    pub(crate) const fn new() -> Self {
+        Self {
+            owner: null_mut(),
+            waiters: WaitList::new(),
+            next_held: null_mut(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn owner(&self) -> *mut Task {
+        return self.owner;
+    }
+}
+
+impl List {
+    unsafe fn unlink(&mut self, t: *mut Task) {
+        unsafe {
+            remove(&mut self.head, t, by_next);
+        }
+    }
+}
+
+impl Sched {
+    unsafe fn set_priority(&mut self, t: *mut Task, p: u8) {
+        unsafe {
+            match (*t).state {
+                State::Running => (*t).current_priority = p,
+                State::Sleeping => (*t).current_priority = p,
+                State::Ready => {
+                    let list = &mut self.ready[(*t).current_priority as usize];
+                    (*list).unlink(t);
+                    if (*list).is_empty() {
+                        self.bitmap &= !(1 << (*t).current_priority);
+                    }
+                    (*t).current_priority = p;
+                    self.make_ready(t);
+                }
+                State::Blocked => {
+                    remove(&mut (*(*t).waiting_on).head, t, by_wait_next);
+                    (*t).current_priority = p;
+                    insert_where(&mut (*(*t).waiting_on).head, t, by_wait_next, |o| {
+                        (*o).current_priority < p
+                    });
+                }
+            }
+        }
+    }
+    unsafe fn refresh_priority(&mut self, v: *mut Task) {
+        unsafe {
+            let mut t = v;
+            loop {
+                let mut p = (*t).original_priority;
+                let mut m = (*t).held;
+                while !m.is_null() {
+                    let w = (*m).waiters.head;
+                    if !w.is_null() && (*w).current_priority > p {
+                        p = (*w).current_priority;
+                    }
+                    m = (*m).next_held;
+                }
+
+                if p == (*t).current_priority {
+                    return;
+                }
+                self.set_priority(t, p);
+                let m = (*t).blocked_mutex;
+                if m.is_null() {
+                    return;
+                }
+                t = (*m).owner;
+            }
+        }
+    }
+    pub(crate) unsafe fn lock_current(
+        &mut self,
+        m: *mut MutexCore,
+        timeout: Option<Duration>,
+    ) -> Lock {
+        unsafe {
+            if (*m).owner.is_null() {
+                (*m).owner = self.current;
+                (*m).next_held = (*self.current).held;
+                (*self.current).held = m;
+                return Lock::Acquired;
+            } else if (*m).owner == self.current {
+                panic!("mutex locked twice by the same task");
+            } else if timeout == Some(Duration::ZERO) {
+                return Lock::WouldBlock;
+            } else {
+                self.block_current(&mut (*m).waiters, timeout);
+                (*self.current).blocked_mutex = m;
+                self.refresh_priority((*m).owner);
+                return Lock::Blocked;
+            }
+        }
+    }
+    pub(crate) unsafe fn unlock_current(&mut self, m: *mut MutexCore) -> bool {
+        unsafe {
+            let cur = self.current;
+
+            assert!((*m).owner == cur, "only the owner can unlock the mutex");
+
+            let mut link: *mut *mut MutexCore = &mut (*cur).held;
+            while *link != m {
+                assert!(
+                    !(*link).is_null(),
+                    "mutex missing from its owner's held list"
+                );
+                link = &mut (**link).next_held;
+            }
+            *link = (*m).next_held; // skip over m
+            (*m).next_held = null_mut();
+
+            let w = self.wake_one(&mut (*m).waiters);
+            (*m).owner = w;
+            if !w.is_null() {
+                // Handover: w owns m now; it was the most urgent waiter, so no refresh.
+                (*w).blocked_mutex = null_mut();
+                (*m).next_held = (*w).held;
+                (*w).held = m;
+            }
+            self.refresh_priority(cur);
+        }
+        return self.should_switch();
     }
 }
 

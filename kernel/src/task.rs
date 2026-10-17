@@ -1,6 +1,6 @@
 use core::cell::UnsafeCell;
 
-use crate::sched::{Instant, PRIOS, WaitList};
+use crate::sched::{Instant, MutexCore, PRIOS, WaitList};
 
 #[repr(C, align(32))] // 8-byte aligned frames (AAPCS); 32 for the MPU in M6
 pub struct Stack<const N: usize> {
@@ -32,7 +32,7 @@ pub struct Task {
     pub(crate) stack_limit: *mut u32,
     pub(crate) state: State,
     pub(crate) next: *mut Task,
-    name: &'static str,
+    pub(crate) name: &'static str,
     pub(crate) current_priority: u8,
     pub(crate) original_priority: u8,
     pub(crate) wake: Instant,
@@ -40,6 +40,8 @@ pub struct Task {
     pub(crate) wait_next: *mut Task,
     pub(crate) timed_out: bool,
     pub(crate) msg: *mut (),
+    pub(crate) held: *mut MutexCore,
+    pub(crate) blocked_mutex: *mut MutexCore,
 }
 
 fn task_exit() -> ! {
@@ -96,6 +98,8 @@ impl Task {
                 wait_next: core::ptr::null_mut(),
                 timed_out: false,
                 msg: core::ptr::null_mut(),
+                held: core::ptr::null_mut(),
+                blocked_mutex: core::ptr::null_mut(),
             }
         }
     }
