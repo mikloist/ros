@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-kernel = { path = "../kernel" }
+kernel = { path = "../kernel", features = ["test-hooks"] }
 rp235x-hal = { version = "0.4", features = ["rt", "binary-info"] }
 cortex-m = "0.7"
 cortex-m-rt = "0.7"

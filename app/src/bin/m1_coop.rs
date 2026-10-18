@@ -167,8 +167,8 @@ fn main() -> ! {
     let b = app::init();
     // Privileged: `fp_regs_survive_switch` pends PendSV by writing ICSR itself.
     let mut tasks = [
-        Task::new("a", 1, task_a, &STACK_A).privileged(),
-        Task::new("b", 1, task_b, &STACK_B).privileged(),
+        Task::new_privileged("a", 1, task_a, &STACK_A),
+        Task::new_privileged("b", 1, task_b, &STACK_B),
     ];
     kernel::start(&mut tasks, b.sys_hz)
 }

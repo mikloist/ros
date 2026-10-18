@@ -3,6 +3,10 @@ name = "kernel"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# Board-test hooks: `Task::new_privileged`. Never enable in an application.
+test-hooks = []
+
 [dependencies]
 
 [target.'cfg(target_arch = "arm")'.dependencies]

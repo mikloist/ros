@@ -89,7 +89,7 @@ fn main() -> ! {
         Task::new("rogue", 2, rogue, &STACK_ROGUE),
         Task::new("overflow", 2, overflow, &STACK_OVERFLOW),
         Task::new("holder", 2, holder, &STACK_HOLDER),
-        Task::new("checker", 3, checker, &STACK_CHECKER).privileged(),
+        Task::new_privileged("checker", 3, checker, &STACK_CHECKER),
     ];
     kernel::start(&mut tasks, b.sys_hz)
 }

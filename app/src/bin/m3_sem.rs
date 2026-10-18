@@ -87,6 +87,6 @@ fn main() -> ! {
         *&raw mut TIMER = Some(b.timer);
     }
     // Privileged: it masks/unmasks the TIMER0 interrupt in the NVIC.
-    let mut tasks = [Task::new("waiter", 2, waiter, &STACK).privileged()];
+    let mut tasks = [Task::new_privileged("waiter", 2, waiter, &STACK)];
     kernel::start(&mut tasks, b.sys_hz)
 }
