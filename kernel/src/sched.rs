@@ -10,8 +10,8 @@ use core::ops::{Add, Sub};
 use core::ptr::null_mut;
 use core::time::Duration;
 
-use crate::list::{Next, TaskList};
-pub(crate) use crate::list::WaitList;
+use crate::collections::list::{Next, TaskList};
+pub(crate) use crate::collections::list::WaitList;
 use crate::task::{State, Task};
 
 pub(crate) const PRIOS: usize = 8;

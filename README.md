@@ -17,7 +17,7 @@ Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cort
 - Tasks run on PSP (Process Stack Pointer; the kernel and interrupt handlers use MSP, the Main Stack Pointer); PSPLIM (PSP limit register) is set per task, so a stack overflow faults in hardware instead of corrupting memory.
 - All scheduler state lives in one `Sched` value (pure logic, host-tested). The only way in is `with_sched`, which runs inside a critical section (interrupts masked).
 - Tasks run unprivileged and reach the kernel only through `svc`: the `SVCall` handler reads the syscall number from the instruction and the arguments from the saved registers, and writes the result back into the saved r0. A call that blocks gets its result written when the task is switched back in.
-- Kernel lists are intrusive: the links live inside `Task` (`next` for ready/sleep lists, `wait_next` for wait lists), so a task can be on two lists at once with no allocation. One generic type, `TaskList<L>` (`list.rs`), covers both; the link field is part of the type (`TaskList<Next>`, `WaitList = TaskList<WaitNext>`).
+- Kernel lists are intrusive: the links live inside `Task` (`next` for ready/sleep lists, `wait_next` for wait lists), so a task can be on two lists at once with no allocation. One generic type, `TaskList<L>` (`collections/list.rs`), covers both; the link field is part of the type (`TaskList<Next>`, `WaitList = TaskList<WaitNext>`).
 
 # Features
 - Preemptive priority scheduler
@@ -46,7 +46,7 @@ Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cort
 - Planned: MPU isolation (M6), multicore (M7), then Wi-Fi via the CYW43 chip
 
 # Layout
-- `kernel/`: the RTOS (`no_std` lib). `task.rs`, `list.rs`, `sched.rs`, `ring.rs` are host-testable; `arch/` and `sync.rs` are Cortex-M33 only
+- `kernel/`: the RTOS (`no_std` lib). `task.rs`, `sched.rs`, `collections/` (task lists, ring buffer) are host-testable; `arch/` and `sync/` (one file each for semaphore, queue, mutex) are Cortex-M33 only
 - `app/`: board init (`app::init()`), one test/demo binary per milestone in `app/src/bin/`
 - `docs/superpowers/specs/`: design; `docs/superpowers/plans/`: one plan per milestone
 

@@ -29,10 +29,15 @@ ros/
 │     │  ├─ fault.rs   MemManage/BusFault/UsageFault: kill the task or halt
 │     │  └─ mpu.rs     (M6)
 │     ├─ task.rs
-│     ├─ list.rs       TaskList<L>: intrusive task lists (next / wait_next)
 │     ├─ sched.rs
-│     ├─ ring.rs
-│     └─ sync.rs       each op = kernel half (returns Status) + task half (makes the syscall)
+│     ├─ collections/  allocation-free containers, host-tested
+│     │  ├─ list.rs    TaskList<L>: intrusive task lists (next / wait_next)
+│     │  └─ ring.rs    Ring<T, N>: queue storage
+│     └─ sync/         each op = kernel half (returns Status) + task half (makes the syscall)
+│        ├─ mod.rs     Timeout, re-exports
+│        ├─ semaphore.rs
+│        ├─ queue.rs
+│        └─ mutex.rs
 └─ app/                bin; board init, task table, demos
    ├─ src/main.rs
    ├─ src/bin/         one demo per milestone
@@ -70,7 +75,7 @@ pub struct Task {
 - App declares stacks as statics (`Stack<N>`, `#[repr(align(32))]`) and builds `Task::new(name, priority, entry: fn() -> !, &STACK)` values in `main` (priority 1..=7). `kernel::start(&mut [Task], sys_hz) -> !`; `sys_hz` comes from the HAL clocks (`app::Board.sys_hz`) so the kernel stays board-agnostic.
 - The kernel creates the idle task itself (`Task::idle`, priority 0, 128-word stack).
 - 8 priorities, higher = more urgent. Priority 0 reserved for the idle task; apps use 1–7. Ready set = `u8` bitmap + per-priority list; highest via CLZ.
-- All task lists are `TaskList<L: Link>` (`list.rs`): intrusive, singly linked, head + tail, with `push_back`, `pop_front`, `insert_sorted`, `remove`. `L` picks the link field (`Next` for ready lists and the sleep list, `WaitNext` for wait lists), so the two kinds cannot be mixed up.
+- All task lists are `TaskList<L: Link>` (`collections/list.rs`): intrusive, singly linked, head + tail, with `push_back`, `pop_front`, `insert_sorted`, `remove`. `L` picks the link field (`Next` for ready lists and the sleep list, `WaitNext` for wait lists), so the two kinds cannot be mixed up.
 - PendSV (asm, lowest exception priority):
   1. Hardware has stacked R0–R3, R12, LR, PC, xPSR (+ S0–S15, FPSCR if FP active; lazy stacking).
   2. Push R4–R11 + EXC_RETURN to PSP; if EXC_RETURN bit 4 == 0 also push S16–S31.
@@ -111,7 +116,7 @@ Semaphore (counting): `new(count)`, `take(timeout) -> Result<(), Timeout>`, `giv
 
 `Queue<T, N>`: fixed ring buffer. `send(item, timeout)`, `recv(timeout)` block on full/empty. `try_send`, `try_recv` never block and may be called from interrupt handlers.
 
-Queue storage is `Ring<T, N>` (`ring.rs`, host-tested): `[MaybeUninit<T>; N]` + head + len, drops leftover items. Direct handoff: a sender writes into a blocked receiver's `msg` slot; a sender blocked on full parks its item in its own slot, and the receiver that frees space moves it into the ring. Whoever makes another task ready checks `should_switch()`; whoever blocks itself always yields. Deciding to wait and calling `block_current` happen in one critical section (no lost wakeups).
+Queue storage is `Ring<T, N>` (`collections/ring.rs`, host-tested): `[MaybeUninit<T>; N]` + head + len, drops leftover items. Direct handoff: a sender writes into a blocked receiver's `msg` slot; a sender blocked on full parks its item in its own slot, and the receiver that frees space moves it into the ring. Whoever makes another task ready checks `should_switch()`; whoever blocks itself always yields. Deciding to wait and calling `block_current` happen in one critical section (no lost wakeups).
 
 Host tests: wait-list order, timeout vs. event race, ring wraparound, inheritance (owner boost, handover/restore, chain, boost kept from another held mutex, timed-out waiter withdraws its boost, remaining waiter keeps its boost).
 

@@ -1,83 +1,12 @@
-//! Semaphore, Queue, Mutex. Each operation has a kernel half (runs inside
-//! `svc_dispatch` or `from_handler`, scheduler already locked, returns a
-//! `Status`) and a task half (encodes the arguments and makes the syscall).
+//! Fixed-capacity queue with direct handoff; `try_send`/`try_recv` are safe
+//! from interrupt handlers.
+use core::cell::UnsafeCell;
 use core::time::Duration;
-use core::{cell::UnsafeCell, marker::PhantomData};
 
+use super::{Timeout, result};
 use crate::arch::svc::{Status, Sys, from_handler, in_handler, split, svc};
-use crate::ring::Ring;
-use crate::sched::{Lock, MutexCore, Sched, WaitList, timeout_to_ticks};
-
-#[derive(Debug, Clone, PartialEq, Eq, Copy)]
-pub struct Timeout;
-
-/// Task side: turns the syscall's r0 back into a `Result`.
-fn result(r0: u32) -> Result<(), Timeout> {
-    if r0 == Status::Ok as u32 { Ok(()) } else { Err(Timeout) }
-}
-
-pub struct Semaphore {
-    inner: UnsafeCell<SemInner>,
-}
-
-pub(crate) struct SemInner {
-    count: u32,
-    waiters: WaitList,
-}
-
-// SAFETY: `inner` is only touched by the kernel halves, with the scheduler locked.
-unsafe impl Sync for Semaphore {}
-
-/// Kernel half of `take`: a unit if there is one, else fail (zero timeout) or block.
-pub(crate) unsafe fn sem_take(s: &mut Sched, inner: *mut SemInner, timeout: Option<Duration>) -> Status {
-    unsafe {
-        if (*inner).count > 0 {
-            (*inner).count -= 1;
-            Status::Ok
-        } else if timeout == Some(Duration::ZERO) {
-            Status::Timeout
-        } else {
-            s.block_current(&mut (*inner).waiters, timeout);
-            Status::Blocked
-        }
-    }
-}
-
-/// Kernel half of `give`: hand the unit to the most urgent waiter, else count up.
-pub(crate) unsafe fn sem_give(s: &mut Sched, inner: *mut SemInner) -> Status {
-    unsafe {
-        if s.wake_one(&mut (*inner).waiters).is_null() {
-            (*inner).count += 1;
-        }
-    }
-    Status::Ok
-}
-
-impl Semaphore {
-    pub const fn new(count: u32) -> Self {
-        Self {
-            inner: UnsafeCell::new(SemInner {
-                count,
-                waiters: WaitList::new(),
-            }),
-        }
-    }
-
-    /// Task context only.
-    pub fn take(&self, timeout: Option<Duration>) -> Result<(), Timeout> {
-        let (lo, hi) = split(timeout_to_ticks(timeout));
-        result(svc::<{ Sys::SemTake as u8 }>(self.inner.get() as u32, lo, hi, 0).0)
-    }
-
-    /// Safe from interrupt handlers.
-    pub fn give(&self) {
-        if in_handler() {
-            from_handler(|s| unsafe { sem_give(s, self.inner.get()) });
-        } else {
-            svc::<{ Sys::SemGive as u8 }>(self.inner.get() as u32, 0, 0, 0);
-        }
-    }
-}
+use crate::collections::ring::Ring;
+use crate::sched::{Sched, WaitList, timeout_to_ticks};
 
 /// A queue's kernel halves, compiled for its own `T` and `N`. The dispatcher
 /// does not know `T`, so it calls them through the pointer at the start of the
@@ -218,82 +147,5 @@ impl<T, const N: usize> Queue<T, N> {
     /// Never blocks; safe from interrupt handlers.
     pub fn try_recv(&self) -> Result<T, Timeout> {
         self.recv(Some(Duration::ZERO))
-    }
-}
-
-/// Kernel half of `lock`.
-pub(crate) unsafe fn mutex_lock(s: &mut Sched, m: *mut MutexCore, timeout: Option<Duration>) -> Status {
-    match unsafe { s.lock_current(m, timeout) } {
-        Lock::Acquired => Status::Ok,
-        Lock::WouldBlock => Status::Timeout,
-        Lock::Blocked => Status::Blocked,
-    }
-}
-
-/// Kernel half of unlock (guard drop). Whether to switch is the dispatcher's call.
-pub(crate) unsafe fn mutex_unlock(s: &mut Sched, m: *mut MutexCore) -> Status {
-    unsafe { s.unlock_current(m) };
-    Status::Ok
-}
-
-pub struct Mutex<T> {
-    core: UnsafeCell<MutexCore>,
-    data: UnsafeCell<T>,
-}
-
-/// Unlocks on drop. `!Send`: only the owner may unlock.
-pub struct MutexGuard<'a, T> {
-    mutex: &'a Mutex<T>,
-    _not_send: PhantomData<*const ()>,
-}
-
-impl<'a, T> MutexGuard<'a, T> {
-    const fn new(mutex: &'a Mutex<T>) -> Self {
-        Self {
-            mutex,
-            _not_send: PhantomData,
-        }
-    }
-}
-
-impl<T> core::ops::Deref for MutexGuard<'_, T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        // SAFETY: the guard exists only while this task owns the mutex.
-        unsafe { &*self.mutex.data.get() }
-    }
-}
-
-impl<T> core::ops::DerefMut for MutexGuard<'_, T> {
-    fn deref_mut(&mut self) -> &mut T {
-        // SAFETY: as above; `&mut self` rules out other borrows through this guard.
-        unsafe { &mut *self.mutex.data.get() }
-    }
-}
-
-impl<T> Drop for MutexGuard<'_, T> {
-    fn drop(&mut self) {
-        svc::<{ Sys::MutexUnlock as u8 }>(self.mutex.core.get() as u32, 0, 0, 0);
-    }
-}
-
-// SAFETY: `core` is only touched by the kernel halves; `data` only through a
-// guard, which exists for one task at a time.
-unsafe impl<T: Send> Sync for Mutex<T> {}
-
-impl<T> Mutex<T> {
-    pub const fn new(data: T) -> Self {
-        Self {
-            core: UnsafeCell::new(MutexCore::new()),
-            data: UnsafeCell::new(data),
-        }
-    }
-
-    /// Task context only.
-    pub fn lock(&self, timeout: Option<Duration>) -> Result<MutexGuard<'_, T>, Timeout> {
-        assert!(!in_handler(), "Mutex::lock from an interrupt");
-        let (lo, hi) = split(timeout_to_ticks(timeout));
-        result(svc::<{ Sys::MutexLock as u8 }>(self.core.get() as u32, lo, hi, 0).0)?;
-        Ok(MutexGuard::new(self))
     }
 }

@@ -1,8 +1,7 @@
 //! ros kernel. Pure logic is host-testable; `arch` and `sync` are Cortex-M33 only.
 #![cfg_attr(not(test), no_std)]
 
-mod list;
-mod ring;
+mod collections;
 mod sched;
 mod task;
 pub use core::time::Duration;
