@@ -24,12 +24,14 @@ ros/
 │  └─ src/
 │     ├─ lib.rs        public API: start(), sleep(), sleep_until(), yield_now(), now(), sync types
 │     ├─ arch/
-│     │  ├─ mod.rs     PendSV, SysTick, SVC entry, critical section, fault handlers
-│     │  └─ mpu.rs
+│     │  ├─ mod.rs     start, PendSV/kernel_switch, SysTick, with_sched, public time API
+│     │  ├─ svc.rs     Sys/Status, svc(), SVCall + svc_dispatch, from_handler, critical-section impl
+│     │  ├─ fault.rs   MemManage/BusFault/UsageFault: kill the task or halt
+│     │  └─ mpu.rs     (M6)
 │     ├─ task.rs
 │     ├─ sched.rs
-│     ├─ sync.rs
-│     └─ syscall.rs
+│     ├─ ring.rs
+│     └─ sync.rs       each op = kernel half (returns Status) + task half (makes the syscall)
 └─ app/                bin; board init, task table, demos
    ├─ src/main.rs
    ├─ src/bin/         one demo per milestone
@@ -47,7 +49,7 @@ ros/
 pub struct Task {
     sp: *mut u32,              // saved PSP
     stack_limit: *mut u32,     // PSPLIM
-    state: State,              // Ready | Running | Sleeping | Blocked (M5: Dead)
+    state: State,              // Ready | Running | Sleeping | Blocked | Dead
     waiting_on: *mut WaitList, // wait list while Blocked
     wait_next: *mut Task,      // link inside that wait list (a timed waiter also uses `next` for the sleep list)
     timed_out: bool,           // set by `tick` when the timeout beat the event
@@ -59,7 +61,8 @@ pub struct Task {
     wake: u64,                 // wake tick while Sleeping
     next: *mut Task,           // link in the one list the task is in
     name: &'static str,
-    // M5: privileged: bool, applied to CONTROL.nPRIV on switch
+    privileged: bool,          // CONTROL.nPRIV for this task, set in kernel_switch; only idle and test tasks
+    syscall_frame: *mut u32,   // frame of the syscall it is blocked in; gets Ok/Timeout in r0 at switch-in
 }
 ```
 
@@ -73,7 +76,7 @@ pub struct Task {
   4. Load next `sp`, `stack_limit` into PSP/PSPLIM, set CONTROL.nPRIV, (level 4) load MPU regions, pop, `bx` EXC_RETURN.
 - Initial frame: xPSR `0x0100_0000`, PC = entry, LR = trap that panics, EXC_RETURN `0xFFFF_FFFD`.
 - Start: make every task and idle ready, set PSP to a dummy area, pend PendSV. No special first-task path.
-- Stack overflow: PSPLIM → UsageFault (STKOF), escalated to HardFault (UsageFault is not enabled separately before M5). See section 5 for fault policy.
+- Stack overflow: PSPLIM → UsageFault (STKOF), which kills the task (section 5).
 
 ## 3. Scheduling and time
 
@@ -83,7 +86,7 @@ pub struct Task {
 - SysTick at 1 kHz from the core clock. `u64` tick count, read inside a critical section; never wraps.
 - Sleepers sit in a list sorted by wake tick; SysTick only examines the head, wakes due tasks, rotates round-robin, pends PendSV if needed.
 - API: `now() -> Instant`, `sleep(Duration)`, `sleep_until(Instant)`, `yield_now()`. `Instant` is a newtype over the `u64` tick count (never wraps); `Duration` is `core::time::Duration`, rounded up to whole ticks so a sleep never ends early.
-- Critical section: `cortex_m::interrupt::free` (save PRIMASK, `cpsid i`, restore). All scheduler state lives in one `Sched` value in `sched.rs`; `arch::with_sched` is the only way to reach it, always inside a critical section. The `critical-section` crate implementation comes from `cortex-m`'s `critical-section-single-core` feature (needed by `defmt-rtt`).
+- Critical section: the kernel provides the `critical-section` implementation (`arch/svc.rs`; defmt and the HAL use it). Privileged code (handlers, `main`, idle) masks interrupts with PRIMASK. An unprivileged task cannot (`cpsid` is ignored), so it makes `Sys::CsEnter`, which raises BASEPRI to `0x80` (masks SysTick and PendSV, not SVCall or faults); `Sys::CsExit` restores it. Restore state: bit 8 set = BASEPRI path, old value in bits 0–7. All scheduler state lives in one `Sched` value in `sched.rs`; `arch::with_sched` (PRIMASK) is the only way to reach it.
 - Exception priorities: SysTick `0x80`, PendSV `0xFF`. SysTick can interrupt PendSV, hence the critical section in `kernel_switch`.
 - The running task is in no list; `switch()` requeues it at its list's tail only if still `Running` (a task woken before its switch is already queued).
 - Host tests: bitmap highest pick, round-robin order, sorted sleep insert with FIFO ties, wake on exact tick, preempt/time-slice decisions, the wake-before-switch race.
@@ -113,24 +116,28 @@ Host tests: wait-list order, timeout vs. event race, ring wraparound, inheritanc
 ## 5. Protection (level 4)
 
 Syscalls:
-- Public API signatures unchanged. Levels 1–3 call the kernel directly. Level 4 wrappers execute `svc #N`.
-- SVC handler: number from the immediate of the instruction before stacked PC; args from stacked R0–R3; result written to stacked R0.
-- Blocking syscalls only pend PendSV; the result is written to the task's stacked R0 at wakeup.
+- Public API signatures unchanged. Task-side calls execute `svc #N` (`svc::<{ Sys::X as u8 }>`), args in r0–r3 (a `u64` as two words, low first). Timeouts encode as ticks with `u64::MAX` = forever (`Some` is capped at `u64::MAX - 1`).
+- `SVCall` (5 asm instructions) picks MSP/PSP from EXC_RETURN bit 2 and tail-jumps to `svc_dispatch(frame)`. The number comes from the `svc` instruction (stacked pc − 2), checked with `Sys::try_from`; an unknown number kills the task. One `with_sched` covers the call and `finish`; the result goes into stacked r0 (`Now` also r1).
+- Blocking: the kernel half returns `Status::Blocked`; `finish` stores the frame in `syscall_frame` and pends PendSV whenever the caller stopped running or `should_switch()`. `kernel_switch` writes `Ok`/`Timeout` (from `timed_out`) into that frame when the task is switched back in, so one syscall returns the final answer.
+- Interrupt handlers are privileged and must not `svc` (it would escalate to HardFault): `give`, `try_send`, `try_recv`, `now`, `yield_now` check IPSR (`in_handler`) and use `from_handler` / direct paths. Syscalls run at priority 0 and must stay short; slow work belongs in a task.
+- Generic queue: `Queue<T, N>` is `repr(C)` and starts with `&'static QueueOps` (send/recv compiled for its `T`); the dispatcher calls through it. Safe to call only once M6 checks that object pointers lie in `.kobj`.
+- Tasks are unprivileged; `kernel_switch` sets CONTROL.nPRIV per task. Only the idle task and board-test tasks (`Task::new_privileged`, kernel feature `test-hooks`, enabled by `app`) run privileged.
 
 MPU (ARMv8-M PMSA, 8 regions, base/limit at 32-byte granularity, PRIVDEFENA = 1):
 - Per task: flash RX; own stack RW + XN; the `.shared` RW region (holds all task-shared data, including every `Mutex<T>`'s `T`); peripheral ranges listed in the task declaration (at most 5 regions remain for these).
 - Regions reloaded in PendSV on each switch.
 - Kernel objects (sync objects, wait lists, TCBs) live in `.kobj`, privileged-only. Syscalls validate pointers: object pointers must lie inside `.kobj`; buffer pointers must lie inside the caller's regions.
 
-Fault policy (M2–M4: every fault escalates to HardFault; probe-rs catches it, prints the backtrace and exits 1. Custom handlers and task kill arrive with M5, which needs them):
-- Fault in task context (MemManage, BusFault, UsageFault incl. STKOF): log task name + fault, set `Dead`, remove from all lists, switch away.
-- Fault in handler/kernel context: log and halt.
-- Interrupt handlers stay privileged and talk to tasks via `give()` / `try_send`.
+Fault policy (M5): MemManage, BusFault and UsageFault are enabled with their own handlers (`arch/fault.rs`).
+- Fault that interrupted a task (ICSR.RETTOBASE) other than idle: reset BASEPRI, log task name + kind + CFSR, clear CFSR, `kill_current` (`Dead`; `switch` never requeues it), move PSP to scratch (`DUMMY`, PSPLIM 0 first, so PendSV can save the dead task's registers even after a stack overflow), pend PendSV.
+- Fault in a handler, in `main` or in idle: panic (exit 1).
+- A killed task's mutexes stay locked; their waiters block until their timeout.
+- `app` has its own panic handler (defmt log + semihosting exit 1): panic-probe ends with `udf`, which would now only kill the panicking task, and it writes SHCSR, which faults when unprivileged.
 
 ## 6. Testing and milestones
 
 - Host: `cargo ktest` (alias for `cargo test -p kernel --target x86_64-unknown-linux-gnu`) for pure logic.
-- Board: one binary per milestone in `app/src/bin/`, run via `probe-rs run`. Tasks verify with `assert!`; failure panics through `panic-probe` (exit 1). Success ends with a semihosting exit (`app::exit_ok()`, exit 0). Verified 2026-10-14: `bkpt` exits 1, so it is not used.
+- Board: one binary per milestone in `app/src/bin/`, run via `probe-rs run`. Tasks verify with `assert!`; a panic anywhere ends the run with exit 1 (`app`'s panic handler). Success ends with a semihosting exit (`app::exit_ok()`, exit 0). Verified 2026-10-14: `bkpt` exits 1, so it is not used.
 
 | # | Goal | Proof |
 |---|---|---|
@@ -139,6 +146,6 @@ Fault policy (M2–M4: every fault escalates to HardFault; probe-rs catches it, 
 | M2 | SysTick, priorities, sleep, idle | Sleep timing within 1 tick; higher-priority wakeup preempts immediately |
 | M3 | Semaphore, queue, interrupt → task | TIMER0 alarm IRQ `give()`s to a task (worst wakeup latency 11–12 µs; a timer replaces the planned GPIO button so the test runs unattended); producer/consumer over a 4-slot queue incl. full/empty timeouts |
 | M4 | Mutex + priority inheritance | Low/medium/high inversion: H waits 8 ms (L's critical section) instead of ~200 ms (mutant without inheritance: 201 ms, fails); two time-sliced tasks lose no updates (200/200); try-lock and timed lock fail on a held mutex |
-| M5 | SVC + unprivileged tasks | Whole API via syscalls; unprivileged SysTick write faults and kills only that task |
+| M5 | SVC + unprivileged tasks, task kill | All M1–M4 tests pass with unprivileged tasks (IRQ→task latency 12 µs). `m5_fault`: a SysTick write (BusFault, CFSR `00008200`), a stack overflow (`00100000`) and an undefined instruction while holding a mutex (`00010000`) each kill only their task; SysTick unchanged, the innocent task ran 10 times in 10 ms, the dead task's mutex stays locked. Mutants: tasks left privileged, no r0 writeback, no-op kill each fail a test |
 | M6 | MPU | Bad pointer kills only the offending task; others keep running |
 | M7 | Multicore (own spec) | Tasks run on both cores; a `give()` on one core wakes a task on the other |

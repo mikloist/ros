@@ -16,6 +16,7 @@ Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cort
 - A new task's stack is pre-filled to look like it was interrupted just before its first instruction, so the first switch "returns" into it.
 - Tasks run on PSP (Process Stack Pointer; the kernel and interrupt handlers use MSP, the Main Stack Pointer); PSPLIM (PSP limit register) is set per task, so a stack overflow faults in hardware instead of corrupting memory.
 - All scheduler state lives in one `Sched` value (pure logic, host-tested). The only way in is `with_sched`, which runs inside a critical section (interrupts masked).
+- Tasks run unprivileged and reach the kernel only through `svc`: the `SVCall` handler reads the syscall number from the instruction and the arguments from the saved registers, and writes the result back into the saved r0. A call that blocks gets its result written when the task is switched back in.
 - Kernel lists are intrusive: the links live inside `Task` (`next` for ready/sleep lists, `wait_next` for wait lists), so a task can be on two lists at once with no allocation.
 
 # Features
@@ -38,7 +39,11 @@ Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cort
     - `lock(timeout)` returns a guard that derefs to the data and unlocks on drop; not recursive, task context only
     - The owner runs at the priority of its most urgent waiter, through chains of mutexes; recomputed on block, unlock and timeout
     - Unlock hands the mutex directly to the most urgent waiter
-- Planned: SVC syscalls + unprivileged tasks (M5), MPU isolation (M6), multicore (M7), then Wi-Fi via the CYW43 chip
+- Syscalls and protection
+    - Tasks are unprivileged; touching core peripherals (SysTick, NVIC, SCB) faults
+    - A fault in a task (bad access, stack overflow, undefined instruction) kills only that task; a fault in the kernel or an interrupt handler halts
+    - Critical sections work for unprivileged tasks too (the kernel raises BASEPRI for them), so `defmt` logging is safe from any task
+- Planned: MPU isolation (M6), multicore (M7), then Wi-Fi via the CYW43 chip
 
 # Layout
 - `kernel/`: the RTOS (`no_std` lib). `task.rs`, `sched.rs`, `ring.rs` are host-testable; `arch/` and `sync.rs` are Cortex-M33 only
@@ -50,9 +55,9 @@ Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cort
 - Board: Pico 2 W behind a CMSIS-DAP probe, run with `cargo run --release --bin <name>` (`probe-rs` flashes it and streams `defmt` logs)
     - A binary passes with `TEST PASS` and exit 0 (semihosting exit); a failed `assert!` panics and exits 1
     - `m1_coop`: two tasks alternate via `yield_now`; FP registers survive switches
-    - `m1_overflow`: overflowing a task stack faults (CFSR = `00100000`), exit 1 is the expected result
     - `m2_sleep`: sleeps last their tick count, periodic `sleep_until` has no drift
     - `m2_preempt`: a high-priority task preempts on time, equal priorities share the CPU
     - `m3_sem`, `m3_queue`: timeouts, counting, interrupt -> task wakeup (TIMER0 alarm), queue full/empty
     - `m4_inversion`, `m4_mutex`: priority inversion resolved, mutual exclusion under time slicing, mutex timeouts
+    - `m5_fault`: three tasks fault three ways (SysTick write, stack overflow, undefined instruction) and only they die; time, SysTick and an innocent task are unaffected
 - Demos: `m1_blinky` (cooperative, polls), `m2_blinky` (sleeps); external LED on GP15
