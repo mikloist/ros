@@ -9,7 +9,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering::SeqCst};
 use cortex_m::peripheral::SYST;
-use kernel::{Duration, Mutex, Stack, Task};
+use kernel::{Duration, Task};
 
 /// Progress markers: 1 = about to fault, 2 = survived the fault (must not happen).
 static ROGUE: AtomicU32 = AtomicU32::new(0);
@@ -17,13 +17,13 @@ static OVERFLOW: AtomicU32 = AtomicU32::new(0);
 static HOLDER: AtomicU32 = AtomicU32::new(0);
 static ALIVE: AtomicU32 = AtomicU32::new(0);
 static RELOAD: AtomicU32 = AtomicU32::new(0);
-static LOCK: Mutex<()> = Mutex::new(());
+kernel::mutex!(LOCK: () = ());
 
-static STACK_ALIVE: Stack<512> = Stack::new();
-static STACK_ROGUE: Stack<512> = Stack::new();
-static STACK_OVERFLOW: Stack<256> = Stack::new();
-static STACK_HOLDER: Stack<512> = Stack::new();
-static STACK_CHECKER: Stack<1024> = Stack::new();
+kernel::stack!(STACK_ALIVE, 512);
+kernel::stack!(STACK_ROGUE, 512);
+kernel::stack!(STACK_OVERFLOW, 256);
+kernel::stack!(STACK_HOLDER, 512);
+kernel::stack!(STACK_CHECKER, 1024);
 
 fn alive() -> ! {
     loop {

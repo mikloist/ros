@@ -7,12 +7,12 @@
 
 use core::arch::asm;
 use core::sync::atomic::{AtomicU32, Ordering::SeqCst};
-use kernel::{Stack, Task};
+use kernel::Task;
 
 const ROUNDS: u32 = 5;
 static TURN: AtomicU32 = AtomicU32::new(0);
-static STACK_A: Stack<512> = Stack::new();
-static STACK_B: Stack<512> = Stack::new();
+kernel::stack!(STACK_A, 512);
+kernel::stack!(STACK_B, 512);
 
 /// Fills s16-s31 with `seed, seed+1, ..`, pends PendSV *inside the same asm
 /// block* (so the compiler cannot spill them for us), then checks they still

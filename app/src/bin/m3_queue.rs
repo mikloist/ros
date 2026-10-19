@@ -5,14 +5,14 @@
 #![no_std]
 #![no_main]
 
-use kernel::{Duration, Queue, Semaphore, Stack, Task, Timeout};
+use kernel::{Duration, Task, Timeout};
 
 const ITEMS: u32 = 200;
-static Q: Queue<u32, 4> = Queue::new();
-/// Producer -> consumer: "the queue is full and the timeouts are checked".
-static FILLED: Semaphore = Semaphore::new(0);
-static STACK_P: Stack<1024> = Stack::new();
-static STACK_C: Stack<1024> = Stack::new();
+kernel::queue!(Q: u32, 4);
+// Producer -> consumer: "the queue is full and the timeouts are checked".
+kernel::semaphore!(FILLED, 0);
+kernel::stack!(STACK_P, 1024);
+kernel::stack!(STACK_C, 1024);
 
 fn producer() -> ! {
     for i in 0..ITEMS {

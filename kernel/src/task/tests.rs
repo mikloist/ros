@@ -94,3 +94,39 @@ fn accepts_stack_of_exactly_one_frame() {
     let mut s = [0xAAAA_AAAA; FRAME_WORDS];
     assert_eq!(init_stack(&mut s, ENTRY, EXIT), 0);
 }
+
+// ---- M6: peripheral grants and stack bounds ----
+
+fn task_with_stack(lo: usize, words: usize) -> Task {
+    let mut t = Task::for_test(1);
+    t.stack_limit = lo as *mut u32;
+    t.stack_end = (lo + 4 * words) as *mut u32;
+    t
+}
+
+#[test]
+fn granted_peripherals_fill_the_region_slots_in_order() {
+    let t = Task::for_test(1).with_peripheral(0xD000_0000, 0x100).with_peripheral(0x400B_0000, 0x40);
+    assert_eq!(t.peripherals[0], Region::device(0xD000_0000, 0x100));
+    assert_eq!(t.peripherals[1], Region::device(0x400B_0000, 0x40));
+    assert_eq!(t.peripherals[2], Region::DISABLED);
+}
+
+#[test]
+#[should_panic(expected = "at most 5")]
+fn a_sixth_peripheral_is_rejected() {
+    let mut t = Task::for_test(1);
+    for i in 0..6 {
+        t = t.with_peripheral(0x4000_0000 + i * 0x1000, 0x100);
+    }
+}
+
+#[test]
+fn stack_contains_checks_both_ends() {
+    let t = task_with_stack(0x2001_0000, 64); // 0x2001_0000..0x2001_0100
+    assert!(t.stack_contains(0x2001_0000, 8), "first bytes");
+    assert!(t.stack_contains(0x2001_00F8, 8), "last bytes");
+    assert!(!t.stack_contains(0x2001_00FC, 8), "runs past the end");
+    assert!(!t.stack_contains(0x2000_FFFC, 8), "starts below the stack");
+    assert!(!t.stack_contains(usize::MAX - 4, 8), "wraps around the address space");
+}

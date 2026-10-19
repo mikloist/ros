@@ -6,19 +6,19 @@
 #![no_main]
 
 use core::sync::atomic::{AtomicU32, Ordering::SeqCst};
-use kernel::{Duration, Mutex, Semaphore, Stack, Task};
+use kernel::{Duration, Task};
 
 const ROUNDS: u32 = 100;
 const HOLD: Duration = Duration::from_millis(30);
-static COUNTER: Mutex<u32> = Mutex::new(0);
-static DONE: Semaphore = Semaphore::new(0);
-static GO_HOLD: Semaphore = Semaphore::new(0);
-static HOLDING: Semaphore = Semaphore::new(0);
+kernel::mutex!(COUNTER: u32 = 0);
+kernel::semaphore!(DONE, 0);
+kernel::semaphore!(GO_HOLD, 0);
+kernel::semaphore!(HOLDING, 0);
 static FINISHED: AtomicU32 = AtomicU32::new(0);
-static STACK_A: Stack<1024> = Stack::new();
-static STACK_B: Stack<1024> = Stack::new();
-static STACK_HOLDER: Stack<1024> = Stack::new();
-static STACK_CHECKER: Stack<1024> = Stack::new();
+kernel::stack!(STACK_A, 1024);
+kernel::stack!(STACK_B, 1024);
+kernel::stack!(STACK_HOLDER, 1024);
+kernel::stack!(STACK_CHECKER, 1024);
 
 fn incrementer() -> ! {
     for _ in 0..ROUNDS {

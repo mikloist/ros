@@ -2,6 +2,8 @@
 #![cfg_attr(not(test), no_std)]
 
 mod collections;
+mod macros;
+mod region;
 mod sched;
 mod task;
 pub use core::time::Duration;
@@ -16,3 +18,6 @@ mod sync;
 pub use arch::{now, sleep, sleep_until, start, yield_now};
 #[cfg(target_arch = "arm")]
 pub use sync::{Mutex, MutexGuard, Queue, Semaphore, Timeout};
+#[cfg(target_arch = "arm")]
+#[doc(hidden)]
+pub use sync::{MutexData, RawMutex};

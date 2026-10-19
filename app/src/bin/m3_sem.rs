@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use hal::fugit::MicrosDurationU32;
 use hal::pac::interrupt;
 use hal::timer::Alarm;
-use kernel::{Duration, Semaphore, Stack, Task, Timeout};
+use kernel::{Duration, Task, Timeout};
 use rp235x_hal as hal;
 
 type Timer = hal::Timer<hal::timer::CopyableTimer0>;
@@ -17,15 +17,15 @@ type Alarm0 = hal::timer::Alarm0<hal::timer::CopyableTimer0>;
 const PERIOD: MicrosDurationU32 = MicrosDurationU32::millis(3);
 const ROUNDS: u32 = 20;
 
-static NEVER: Semaphore = Semaphore::new(0);
-static COUNTED: Semaphore = Semaphore::new(0);
-static IRQ: Semaphore = Semaphore::new(0);
+kernel::semaphore!(NEVER, 0);
+kernel::semaphore!(COUNTED, 0);
+kernel::semaphore!(IRQ, 0);
 /// TIMER0 low word at the moment the ISR gave `IRQ`.
 static GIVEN_AT: AtomicU32 = AtomicU32::new(0);
 
 static mut TIMER: Option<Timer> = None;
 static mut ALARM: Option<Alarm0> = None;
-static STACK: Stack<1024> = Stack::new();
+kernel::stack!(STACK, 1024);
 
 fn micros() -> u32 {
     // SAFETY: written once in `main` before the kernel starts; read-only afterwards.

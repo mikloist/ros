@@ -7,7 +7,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
 use embedded_hal::digital::StatefulOutputPin;
-use kernel::{Stack, Task};
+use kernel::Task;
 use rp235x_hal as hal;
 
 type Led =
@@ -17,8 +17,8 @@ type Timer = hal::Timer<hal::timer::CopyableTimer0>;
 /// Filled by `main` before `kernel::start`, taken once by `led`.
 static mut LED: Option<(Led, Timer)> = None;
 static TURNS: AtomicU32 = AtomicU32::new(0);
-static STACK_LED: Stack<512> = Stack::new();
-static STACK_COUNTER: Stack<512> = Stack::new();
+kernel::stack!(STACK_LED, 512);
+kernel::stack!(STACK_COUNTER, 512);
 
 const HALF_PERIOD_US: u64 = 500_000;
 
@@ -55,7 +55,10 @@ fn main() -> ! {
     // SAFETY: no task is running yet.
     unsafe { *&raw mut LED = Some((pin, b.timer)) };
     let mut tasks = [
-        Task::new("led", 1, led, &STACK_LED),
+        // led drives GP15 (SIO) and reads TIMER0.
+        Task::new("led", 1, led, &STACK_LED)
+            .with_peripheral(hal::pac::SIO::PTR as usize, 0x200)
+            .with_peripheral(hal::pac::TIMER0::PTR as usize, 0x100),
         Task::new("counter", 1, counter, &STACK_COUNTER),
     ];
     kernel::start(&mut tasks, b.sys_hz)

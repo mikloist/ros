@@ -4,14 +4,14 @@
 #![no_std]
 #![no_main]
 
-use kernel::{Duration, Stack, Task};
+use kernel::{Duration, Task};
 use rp235x_hal as hal;
 
 type Timer = hal::Timer<hal::timer::CopyableTimer0>;
 
 /// Independent 1 MHz clock (TIMER0) to measure the kernel's SysTick-based sleeps.
 static mut TIMER: Option<Timer> = None;
-static STACK: Stack<1024> = Stack::new();
+kernel::stack!(STACK, 1024);
 
 fn micros() -> u64 {
     // SAFETY: written once in `main` before the kernel starts; read-only afterwards.
@@ -67,6 +67,8 @@ fn main() -> ! {
     let b = app::init();
     // SAFETY: no task is running yet.
     unsafe { *&raw mut TIMER = Some(b.timer) };
-    let mut tasks = [Task::new("sleeper", 1, sleeper, &STACK)];
+    // The sleeper reads TIMER0 itself: grant it that peripheral.
+    let timer0 = hal::pac::TIMER0::PTR as usize;
+    let mut tasks = [Task::new("sleeper", 1, sleeper, &STACK).with_peripheral(timer0, 0x100)];
     kernel::start(&mut tasks, b.sys_hz)
 }

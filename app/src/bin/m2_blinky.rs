@@ -5,7 +5,7 @@
 #![no_main]
 
 use embedded_hal::digital::StatefulOutputPin;
-use kernel::{Duration, Stack, Task};
+use kernel::{Duration, Task};
 use rp235x_hal as hal;
 
 type Led =
@@ -13,7 +13,7 @@ type Led =
 
 /// Filled by `main` before `kernel::start`, taken once by `led`.
 static mut LED: Option<Led> = None;
-static STACK_LED: Stack<512> = Stack::new();
+kernel::stack!(STACK_LED, 512);
 
 fn led() -> ! {
     // SAFETY: written once in `main` before the kernel starts; only this task reads it.
@@ -39,6 +39,8 @@ fn main() -> ! {
     let pin = b.pins.gpio15.into_push_pull_output();
     // SAFETY: no task is running yet.
     unsafe { *&raw mut LED = Some(pin) };
-    let mut tasks = [Task::new("led", 1, led, &STACK_LED)];
+    // led drives GP15 through SIO.
+    let sio = hal::pac::SIO::PTR as usize;
+    let mut tasks = [Task::new("led", 1, led, &STACK_LED).with_peripheral(sio, 0x200)];
     kernel::start(&mut tasks, b.sys_hz)
 }

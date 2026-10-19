@@ -2,7 +2,7 @@
 #![no_std]
 
 use hal::Clock;
-use rp235x_hal as hal;
+pub use rp235x_hal as hal;
 // `kernel` provides the critical-section impl every binary needs (defmt, HAL).
 use {defmt_rtt as _, kernel as _};
 

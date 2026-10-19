@@ -71,5 +71,37 @@ SECTIONS {
 
 } INSERT AFTER .uninit;
 
+/* ### Kernel memory protection (M6)
+ *
+ * RAM order: .data | .bss | .uninit  = shared RAM, every task may use it
+ *            .kobj                    = kernel objects, kernel only
+ *            .stacks                  = task stacks, each task only its own
+ * The MPU's shared region is [__sdata, __skobj), so both sections must come
+ * after everything shared and be 32-byte aligned (MPU granule).
+ * .kobj has initial values; the kernel's __pre_init copies them from flash.
+ */
+SECTIONS {
+    .kobj : ALIGN(32)
+    {
+        __skobj = .;
+        *(.kobj .kobj.*);
+        . = ALIGN(32);
+        __ekobj = .;
+    } > RAM AT>FLASH
+    __sikobj = LOADADDR(.kobj);
+
+    .stacks (NOLOAD) : ALIGN(32)
+    {
+        __sstacks = .;
+        *(.stacks .stacks.*);
+        . = ALIGN(32);
+        __estacks = .;
+    } > RAM
+} INSERT AFTER .uninit;
+
+__flash_start = ORIGIN(FLASH);
+__flash_end = ORIGIN(FLASH) + LENGTH(FLASH);
+ASSERT(__sdata % 32 == 0, "shared RAM must start 32-byte aligned for the MPU");
+
 PROVIDE(start_to_end = __end_block_addr - __start_block_addr);
 PROVIDE(end_to_start = __start_block_addr - __end_block_addr);

@@ -7,14 +7,14 @@
 #![no_main]
 
 use core::sync::atomic::{AtomicU32, Ordering::SeqCst};
-use kernel::{Duration, Instant, Mutex, Stack, Task};
+use kernel::{Duration, Instant, Task};
 
-static LOCK: Mutex<()> = Mutex::new(());
+kernel::mutex!(LOCK: () = ());
 /// Bit 0: H got the mutex. Bit 1: M finished burning.
 static EVENTS: AtomicU32 = AtomicU32::new(0);
-static STACK_L: Stack<512> = Stack::new();
-static STACK_M: Stack<512> = Stack::new();
-static STACK_H: Stack<1024> = Stack::new();
+kernel::stack!(STACK_L, 512);
+kernel::stack!(STACK_M, 512);
+kernel::stack!(STACK_H, 1024);
 
 /// Busy CPU work until `until` (preemptible, unlike sleep).
 fn burn_until(until: Instant) {

@@ -9,13 +9,13 @@
 #![no_main]
 
 use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
-use kernel::{Duration, Stack, Task};
+use kernel::{Duration, Task};
 
 static SPIN_A: AtomicU32 = AtomicU32::new(0);
 static SPIN_B: AtomicU32 = AtomicU32::new(0);
-static STACK_A: Stack<256> = Stack::new();
-static STACK_B: Stack<256> = Stack::new();
-static STACK_HIGH: Stack<1024> = Stack::new();
+kernel::stack!(STACK_A, 256);
+kernel::stack!(STACK_B, 256);
+kernel::stack!(STACK_HIGH, 1024);
 
 const PERIOD: Duration = Duration::from_millis(4);
 const PERIODS: u32 = 50;
