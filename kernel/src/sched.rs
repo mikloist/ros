@@ -4,11 +4,14 @@
 //! - The running task (`current`) is in no list.
 //! - Bit `p` of `bitmap` is set iff `ready[p]` is non-empty.
 //! - `sleeping` is sorted by `wake` ascending; equal `wake`s keep arrival order.
-//! - A task is in at most one list at a time, linked through `Task::next`.
+//! - A task is on at most one `next` list (a ready list or `sleeping`) and at
+//!   most one wait list (`wait_next`).
 use core::ops::{Add, Sub};
 use core::ptr::null_mut;
 use core::time::Duration;
 
+use crate::list::{Next, TaskList};
+pub(crate) use crate::list::WaitList;
 use crate::task::{State, Task};
 
 pub(crate) const PRIOS: usize = 8;
@@ -72,105 +75,11 @@ impl Sub for Instant {
     }
 }
 
-#[derive(Clone, Copy)]
-struct List {
-    head: *mut Task,
-    tail: *mut Task,
-}
-
-impl List {
-    const EMPTY: List = List {
-        head: null_mut(),
-        tail: null_mut(),
-    };
-
-    fn is_empty(&self) -> bool {
-        self.head == null_mut()
-    }
-
-    /// Appends `t`. Caller guarantees `t` is valid and in no list.
-    unsafe fn push_back(&mut self, t: *mut Task) {
-        unsafe {
-            (*t).next = null_mut();
-            if self.tail == null_mut() {
-                self.head = t;
-                self.tail = t;
-            } else {
-                (*self.tail).next = t;
-                self.tail = t;
-            }
-        }
-    }
-
-    /// Removes and returns the head. Caller guarantees the list is non-empty.
-    unsafe fn pop_front(&mut self) -> *mut Task {
-        let current = self.head;
-        unsafe {
-            let next = (*self.head).next;
-            if next == null_mut() {
-                self.tail = null_mut();
-                self.head = null_mut();
-            } else {
-                self.head = next;
-            }
-        }
-        return current;
-    }
-}
-
-// ---- Singly linked lists threaded through a `Task` link field ----
-//
-// The sleep list uses `next`, wait lists use `wait_next` (a timed waiter is on
-// both at once). `head` points at the list's head pointer; walking a pointer to
-// the link (not to the task) makes front, middle and end the same case.
-
-/// Which link field a list follows.
-type LinkOf = unsafe fn(*mut Task) -> *mut *mut Task;
-
-unsafe fn by_next(t: *mut Task) -> *mut *mut Task {
-    unsafe { &raw mut (*t).next }
-}
-
-unsafe fn by_wait_next(t: *mut Task) -> *mut *mut Task {
-    unsafe { &raw mut (*t).wait_next }
-}
-
-/// Splices `t` in before the first task where `stop` is true, or at the end.
-unsafe fn insert_where(
-    head: *mut *mut Task,
-    t: *mut Task,
-    link: LinkOf,
-    stop: impl Fn(*mut Task) -> bool,
-) {
-    unsafe {
-        let mut at = head;
-        while !(*at).is_null() && !stop(*at) {
-            at = link(*at);
-        }
-        *link(t) = *at;
-        *at = t;
-    }
-}
-
-/// Unlinks `t` if it is in the list (no-op otherwise) and clears its link.
-unsafe fn remove(head: *mut *mut Task, t: *mut Task, link: LinkOf) {
-    unsafe {
-        let mut at = head;
-        while !(*at).is_null() {
-            if *at == t {
-                *at = *link(t);
-                *link(t) = null_mut();
-                return;
-            }
-            at = link(*at);
-        }
-    }
-}
-
 pub(crate) struct Sched {
-    ready: [List; PRIOS],
+    ready: [TaskList<Next>; PRIOS],
     bitmap: u8,
-    sleeping: *mut Task,
+    /// Sorted by `wake`.
+    sleeping: TaskList<Next>,
     current: *mut Task,
     now: Instant,
 }
@@ -178,9 +87,9 @@ pub(crate) struct Sched {
 impl Sched {
     pub(crate) const fn new() -> Self {
         Self {
-            ready: [List::EMPTY; PRIOS],
+            ready: [const { TaskList::new() }; PRIOS],
             bitmap: 0,
-            sleeping: null_mut(),
+            sleeping: TaskList::new(),
             current: null_mut(),
             now: Instant::ZERO,
         }
@@ -270,13 +179,13 @@ impl Sched {
         unsafe {
             (*t).state = state;
             (*t).wake = until;
-            insert_where(&mut self.sleeping, t, by_next, |o| (*o).wake > until);
+            self.sleeping.insert_sorted(t, |o| (*o).wake > until);
         }
     }
 
     /// Unlinks `t` from `sleeping` if it is there (cancels a timeout).
     unsafe fn remove_sleeper(&mut self, t: *mut Task) {
-        unsafe { remove(&mut self.sleeping, t, by_next) };
+        unsafe { self.sleeping.remove(t) };
     }
 
     /// Called from SysTick. Advances `now`, makes every sleeper with
@@ -286,12 +195,11 @@ impl Sched {
     pub(crate) fn tick(&mut self) -> bool {
         self.now.0 += 1;
         unsafe {
-            while !self.sleeping.is_null() && (*self.sleeping).wake <= self.now {
-                let c = self.sleeping;
-                self.sleeping = (*c).next;
+            while !self.sleeping.is_empty() && (*self.sleeping.head()).wake <= self.now {
+                let c = self.sleeping.pop_front();
                 if (*c).state == State::Blocked {
                     // Timed wait expired before the event: leave the wait list.
-                    remove(&mut (*(*c).waiting_on).head, c, by_wait_next);
+                    (*(*c).waiting_on).remove(c);
                     (*c).waiting_on = null_mut();
                     (*c).timed_out = true;
                     let m = (*c).blocked_mutex;
@@ -330,9 +238,7 @@ impl Sched {
             // Most urgent first; stop before the first *less* urgent waiter,
             // so equal priorities stay in arrival order.
             let p = (*c).current_priority;
-            insert_where(&mut (*wl).head, c, by_wait_next, |o| {
-                (*o).current_priority < p
-            });
+            (*wl).insert_sorted(c, |o| (*o).current_priority < p);
 
             if let Some(v) = timeout {
                 self.insert_sleeper(c, self.now + v, State::Blocked);
@@ -351,12 +257,10 @@ impl Sched {
         }
 
         unsafe {
-            let t = (*wl).head;
+            let t = (*wl).pop_front();
             if t.is_null() {
                 return null_mut();
             }
-            (*wl).head = (*t).wait_next;
-            (*t).wait_next = null_mut();
             (*t).waiting_on = null_mut();
             self.remove_sleeper(t);
             self.make_ready(t);
@@ -383,23 +287,6 @@ impl Sched {
             );
             (*self.current).state = State::Dead;
         }
-    }
-}
-
-/// Tasks blocked on one sync object, linked through `Task::wait_next`, most
-/// urgent first; equal priorities in arrival order.
-pub(crate) struct WaitList {
-    head: *mut Task,
-}
-
-impl WaitList {
-    pub(crate) const fn new() -> Self {
-        WaitList { head: null_mut() }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.head.is_null()
     }
 }
 
@@ -430,14 +317,6 @@ impl MutexCore {
     }
 }
 
-impl List {
-    unsafe fn unlink(&mut self, t: *mut Task) {
-        unsafe {
-            remove(&mut self.head, t, by_next);
-        }
-    }
-}
-
 impl Sched {
     unsafe fn set_priority(&mut self, t: *mut Task, p: u8) {
         unsafe {
@@ -447,7 +326,7 @@ impl Sched {
                 State::Sleeping => (*t).current_priority = p,
                 State::Ready => {
                     let list = &mut self.ready[(*t).current_priority as usize];
-                    (*list).unlink(t);
+                    list.remove(t);
                     if (*list).is_empty() {
                         self.bitmap &= !(1 << (*t).current_priority);
                     }
@@ -455,11 +334,10 @@ impl Sched {
                     self.make_ready(t);
                 }
                 State::Blocked => {
-                    remove(&mut (*(*t).waiting_on).head, t, by_wait_next);
+                    let wl = (*t).waiting_on;
+                    (*wl).remove(t);
                     (*t).current_priority = p;
-                    insert_where(&mut (*(*t).waiting_on).head, t, by_wait_next, |o| {
-                        (*o).current_priority < p
-                    });
+                    (*wl).insert_sorted(t, |o| (*o).current_priority < p);
                 }
             }
         }
@@ -471,7 +349,7 @@ impl Sched {
                 let mut p = (*t).original_priority;
                 let mut m = (*t).held;
                 while !m.is_null() {
-                    let w = (*m).waiters.head;
+                    let w = (*m).waiters.head();
                     if !w.is_null() && (*w).current_priority > p {
                         p = (*w).current_priority;
                     }

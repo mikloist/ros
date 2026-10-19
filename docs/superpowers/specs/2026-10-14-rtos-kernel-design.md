@@ -29,6 +29,7 @@ ros/
 │     │  ├─ fault.rs   MemManage/BusFault/UsageFault: kill the task or halt
 │     │  └─ mpu.rs     (M6)
 │     ├─ task.rs
+│     ├─ list.rs       TaskList<L>: intrusive task lists (next / wait_next)
 │     ├─ sched.rs
 │     ├─ ring.rs
 │     └─ sync.rs       each op = kernel half (returns Status) + task half (makes the syscall)
@@ -69,6 +70,7 @@ pub struct Task {
 - App declares stacks as statics (`Stack<N>`, `#[repr(align(32))]`) and builds `Task::new(name, priority, entry: fn() -> !, &STACK)` values in `main` (priority 1..=7). `kernel::start(&mut [Task], sys_hz) -> !`; `sys_hz` comes from the HAL clocks (`app::Board.sys_hz`) so the kernel stays board-agnostic.
 - The kernel creates the idle task itself (`Task::idle`, priority 0, 128-word stack).
 - 8 priorities, higher = more urgent. Priority 0 reserved for the idle task; apps use 1–7. Ready set = `u8` bitmap + per-priority list; highest via CLZ.
+- All task lists are `TaskList<L: Link>` (`list.rs`): intrusive, singly linked, head + tail, with `push_back`, `pop_front`, `insert_sorted`, `remove`. `L` picks the link field (`Next` for ready lists and the sleep list, `WaitNext` for wait lists), so the two kinds cannot be mixed up.
 - PendSV (asm, lowest exception priority):
   1. Hardware has stacked R0–R3, R12, LR, PC, xPSR (+ S0–S15, FPSCR if FP active; lazy stacking).
   2. Push R4–R11 + EXC_RETURN to PSP; if EXC_RETURN bit 4 == 0 also push S16–S31.
