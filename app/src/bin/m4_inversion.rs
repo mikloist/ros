@@ -49,8 +49,16 @@ fn high() -> ! {
     EVENTS.fetch_or(1, SeqCst);
     drop(guard);
     defmt::info!("H waited {} ms for the mutex", waited.as_millis() as u32);
-    assert_eq!(EVENTS.load(SeqCst) & 2, 0, "M finished first: priority inversion");
-    assert!(waited < Duration::from_millis(15), "H waited {} ms", waited.as_millis() as u32);
+    assert_eq!(
+        EVENTS.load(SeqCst) & 2,
+        0,
+        "M finished first: priority inversion"
+    );
+    assert!(
+        waited < Duration::from_millis(15),
+        "H waited {} ms",
+        waited.as_millis() as u32
+    );
     app::exit_ok()
 }
 

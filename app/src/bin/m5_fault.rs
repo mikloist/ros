@@ -43,7 +43,11 @@ fn rogue() -> ! {
 #[inline(never)]
 fn recurse(n: u32) -> u32 {
     let buf = core::hint::black_box([n; 16]);
-    if n == 0 { 0 } else { recurse(n - 1).wrapping_add(buf[3]) }
+    if n == 0 {
+        0
+    } else {
+        recurse(n - 1).wrapping_add(buf[3])
+    }
 }
 
 fn overflow() -> ! {
@@ -62,7 +66,11 @@ fn holder() -> ! {
 
 fn checker() -> ! {
     kernel::sleep(Duration::from_millis(20));
-    assert_eq!(ROGUE.load(SeqCst), 1, "rogue task ran on after writing SysTick: not unprivileged, or not killed");
+    assert_eq!(
+        ROGUE.load(SeqCst),
+        1,
+        "rogue task ran on after writing SysTick: not unprivileged, or not killed"
+    );
     assert_eq!(OVERFLOW.load(SeqCst), 1, "overflowing task ran on");
     assert_eq!(HOLDER.load(SeqCst), 1, "faulting holder ran on");
     // SAFETY: this task is privileged; reading SysTick is allowed.
@@ -71,12 +79,22 @@ fn checker() -> ! {
 
     let (t0, a0) = (kernel::now(), ALIVE.load(SeqCst));
     kernel::sleep(Duration::from_millis(10));
-    assert_eq!(kernel::now() - t0, Duration::from_millis(10), "time stopped");
+    assert_eq!(
+        kernel::now() - t0,
+        Duration::from_millis(10),
+        "time stopped"
+    );
     let ran = ALIVE.load(SeqCst) - a0;
     assert!(ran >= 9, "innocent task ran only {} times in 10 ms", ran);
 
-    assert!(LOCK.lock(Some(Duration::from_millis(5))).is_err(), "dead task's mutex was released");
-    defmt::info!("3 tasks killed; SysTick intact; innocent task ran {} times in 10 ms", ran);
+    assert!(
+        LOCK.lock(Some(Duration::from_millis(5))).is_err(),
+        "dead task's mutex was released"
+    );
+    defmt::info!(
+        "3 tasks killed; SysTick intact; innocent task ran {} times in 10 ms",
+        ran
+    );
     app::exit_ok()
 }
 

@@ -25,6 +25,7 @@ pub(crate) enum State {
     Running,
     Sleeping,
     Blocked,
+    Dead,
 }
 
 pub struct Task {
@@ -42,6 +43,8 @@ pub struct Task {
     pub(crate) msg: *mut (),
     pub(crate) held: *mut MutexCore,
     pub(crate) blocked_mutex: *mut MutexCore,
+    pub(crate) privileged: bool,
+    pub(crate) syscall_frame: *mut u32,
 }
 
 fn task_exit() -> ! {
@@ -66,7 +69,9 @@ impl Task {
 
     /// The kernel's idle task: priority 0, always ready when nothing else is.
     pub(crate) fn idle<const N: usize>(entry: fn() -> !, stack: &'static Stack<N>) -> Task {
-        Self::build("idle", 0, entry, stack)
+        let mut t = Self::build("idle", 0, entry, stack);
+        t.privileged = true;
+        return t;
     }
 
     /// Writes the initial frame and fills the fields; callers check `priority`.
@@ -100,8 +105,23 @@ impl Task {
                 msg: core::ptr::null_mut(),
                 held: core::ptr::null_mut(),
                 blocked_mutex: core::ptr::null_mut(),
+                privileged: false,
+                syscall_frame: core::ptr::null_mut(),
             }
         }
+    }
+    /// Board tests only: like `new`, but the task runs privileged (it may
+    /// touch core peripherals such as the NVIC or SysTick).
+    #[cfg(feature = "test-hooks")]
+    pub fn new_privileged<const N: usize>(
+        name: &'static str,
+        priority: u8,
+        entry: fn() -> !,
+        stack: &'static Stack<N>,
+    ) -> Self {
+        let mut s = Self::new(name, priority, entry, stack); // same priority check as `new`
+        s.privileged = true;
+        return s;
     }
 }
 

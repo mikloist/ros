@@ -10,7 +10,8 @@ use embedded_hal::digital::StatefulOutputPin;
 use kernel::{Stack, Task};
 use rp235x_hal as hal;
 
-type Led = hal::gpio::Pin<hal::gpio::bank0::Gpio15, hal::gpio::FunctionSioOutput, hal::gpio::PullDown>;
+type Led =
+    hal::gpio::Pin<hal::gpio::bank0::Gpio15, hal::gpio::FunctionSioOutput, hal::gpio::PullDown>;
 type Timer = hal::Timer<hal::timer::CopyableTimer0>;
 
 /// Filled by `main` before `kernel::start`, taken once by `led`.
@@ -32,7 +33,11 @@ fn led() -> ! {
         }
         pin.toggle().unwrap();
         let on = pin.is_set_high().unwrap();
-        defmt::info!("led {} | counter ran {} times", if on { "on " } else { "off" }, TURNS.swap(0, Relaxed));
+        defmt::info!(
+            "led {} | counter ran {} times",
+            if on { "on " } else { "off" },
+            TURNS.swap(0, Relaxed)
+        );
     }
 }
 
@@ -49,6 +54,9 @@ fn main() -> ! {
     let pin = b.pins.gpio15.into_push_pull_output();
     // SAFETY: no task is running yet.
     unsafe { *&raw mut LED = Some((pin, b.timer)) };
-    let mut tasks = [Task::new("led", 1, led, &STACK_LED), Task::new("counter", 1, counter, &STACK_COUNTER)];
+    let mut tasks = [
+        Task::new("led", 1, led, &STACK_LED),
+        Task::new("counter", 1, counter, &STACK_COUNTER),
+    ];
     kernel::start(&mut tasks, b.sys_hz)
 }

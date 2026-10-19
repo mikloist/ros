@@ -139,7 +139,11 @@ fn task_woken_before_its_switch_is_not_queued_twice() {
     s.tick(); // wakes t[0] while it is still `current`
     assert_eq!(s.switch(), t[0]);
     s.sleep_current(at(10));
-    assert_eq!(s.switch(), idle, "a stale second queue entry ran a sleeping task");
+    assert_eq!(
+        s.switch(),
+        idle,
+        "a stale second queue entry ran a sleeping task"
+    );
 }
 
 #[test]
@@ -256,17 +260,29 @@ fn waiter_woken_before_its_switch_is_not_queued_twice() {
     }
     assert_eq!(s.switch(), t[0]);
     s.sleep_current(at(10));
-    assert_eq!(s.switch(), idle, "a stale second queue entry ran a sleeping task");
+    assert_eq!(
+        s.switch(),
+        idle,
+        "a stale second queue entry ran a sleeping task"
+    );
 }
 
 #[test]
 fn instant_math_rounds_durations_up_to_whole_ticks() {
-    assert_eq!(at(10) + Duration::from_micros(1), at(11), "a sleep must never end early");
+    assert_eq!(
+        at(10) + Duration::from_micros(1),
+        at(11),
+        "a sleep must never end early"
+    );
     assert_eq!(at(10) + ms(5), at(15));
     assert_eq!(at(10) - ms(3), at(7));
     assert_eq!(at(2) - ms(5), at(0), "saturates at start");
     assert_eq!(at(15) - at(10), ms(5));
-    assert_eq!(at(10) - at(15), ms(0), "earlier minus later is zero, not a wrap");
+    assert_eq!(
+        at(10) - at(15),
+        ms(0),
+        "earlier minus later is zero, not a wrap"
+    );
 }
 
 // ---- M4: mutex and priority inheritance ----
@@ -298,7 +314,10 @@ fn zero_timeout_on_held_mutex_does_not_block() {
     unsafe { s.lock_current(&mut *m, None) };
     s.sleep_current(at(1));
     assert_eq!(s.switch(), t[1]);
-    assert_eq!(unsafe { s.lock_current(&mut *m, Some(Duration::ZERO)) }, Lock::WouldBlock);
+    assert_eq!(
+        unsafe { s.lock_current(&mut *m, Some(Duration::ZERO)) },
+        Lock::WouldBlock
+    );
     assert_eq!(prio(t[0]), 2, "a try-lock must not boost the owner");
 }
 
@@ -337,14 +356,21 @@ fn inversion() -> (Sched, Vec<*mut Task>, Box<MutexCore>, Tasks) {
 fn owner_inherits_the_waiters_priority_and_runs_before_medium() {
     let (mut s, t, _m, _own) = inversion();
     assert_eq!(prio(t[0]), 3, "L must run at H's priority");
-    assert_eq!(s.switch(), t[0], "M ran while H waited for L: priority inversion");
+    assert_eq!(
+        s.switch(),
+        t[0],
+        "M ran while H waited for L: priority inversion"
+    );
 }
 
 #[test]
 fn unlock_hands_over_and_restores_the_owner() {
     let (mut s, t, mut m, _own) = inversion();
     assert_eq!(s.switch(), t[0]);
-    assert!(unsafe { s.unlock_current(&mut *m) }, "H outranks L now: switch");
+    assert!(
+        unsafe { s.unlock_current(&mut *m) },
+        "H outranks L now: switch"
+    );
     assert_eq!(m.owner(), t[2], "handed straight to the waiter");
     assert_eq!(prio(t[0]), 1, "L back to its own priority");
     assert_eq!(s.switch(), t[2]);
@@ -457,10 +483,22 @@ fn remaining_waiter_keeps_its_boost_when_another_times_out() {
 fn syscall_timeouts_round_up_and_survive_the_round_trip() {
     use crate::sched::{ticks_to_timeout, timeout_to_ticks};
     assert_eq!(timeout_to_ticks(None), u64::MAX, "forever");
-    assert_eq!(timeout_to_ticks(Some(Duration::ZERO)), 0, "try: never blocks");
-    assert_eq!(timeout_to_ticks(Some(Duration::from_micros(1))), 1, "a wait must never end early");
+    assert_eq!(
+        timeout_to_ticks(Some(Duration::ZERO)),
+        0,
+        "try: never blocks"
+    );
+    assert_eq!(
+        timeout_to_ticks(Some(Duration::from_micros(1))),
+        1,
+        "a wait must never end early"
+    );
     assert_eq!(timeout_to_ticks(Some(ms(5))), 5);
-    assert_ne!(timeout_to_ticks(Some(Duration::MAX)), u64::MAX, "a huge timeout is not forever");
+    assert_ne!(
+        timeout_to_ticks(Some(Duration::MAX)),
+        u64::MAX,
+        "a huge timeout is not forever"
+    );
     for t in [None, Some(Duration::ZERO), Some(ms(1)), Some(ms(5))] {
         assert_eq!(ticks_to_timeout(timeout_to_ticks(t)), t);
     }
@@ -489,11 +527,17 @@ fn killed_owner_leaves_its_mutex_locked() {
     s.switch();
     s.tick(); // the waiter wakes and tries the dead task's mutex
     assert_eq!(s.switch(), t[1]);
-    assert_eq!(unsafe { s.lock_current(&mut *m, Some(ms(2))) }, Lock::Blocked);
+    assert_eq!(
+        unsafe { s.lock_current(&mut *m, Some(ms(2))) },
+        Lock::Blocked
+    );
     assert_eq!(prio(t[0]), 2, "boosting a dead owner is harmless");
     s.switch();
     s.tick();
     s.tick();
-    assert!(unsafe { (*t[1]).timed_out }, "lock on a dead task's mutex must time out");
+    assert!(
+        unsafe { (*t[1]).timed_out },
+        "lock on a dead task's mutex must time out"
+    );
     assert_eq!(m.owner(), t[0], "mutex stays locked");
 }

@@ -1,6 +1,8 @@
 //! Cortex-M33 glue: PendSV context switch, SysTick, critical sections, and the
 //! public task API. All scheduling decisions live in `sched.rs`.
 
+pub(crate) mod svc;
+
 use core::arch::global_asm;
 
 use cortex_m::peripheral::scb::SystemHandler;
@@ -8,7 +10,8 @@ use cortex_m::peripheral::syst::SystClkSource;
 
 use core::time::Duration;
 
-use crate::sched::{Instant, Sched};
+use crate::arch::svc::{Status, Sys, in_handler, split, svc};
+use crate::sched::{Instant, Sched, timeout_to_ticks};
 use crate::task::{Stack, Task};
 
 /// The one scheduler. Only touch it through `with_sched`.
@@ -73,32 +76,36 @@ pub fn start(tasks: &mut [Task], sys_freq: u32) -> ! {
     unreachable!()
 }
 
-/// Hands the CPU to the next task by pending PendSV.
+/// Hands the CPU to the next task (from an interrupt handler: once it returns).
 pub fn yield_now() {
-    cortex_m::peripheral::SCB::set_pendsv();
-    cortex_m::asm::dsb();
-    cortex_m::asm::isb();
+    if in_handler() {
+        cortex_m::peripheral::SCB::set_pendsv();
+    } else {
+        svc::<{ Sys::Yield as u8 }>(0, 0, 0, 0);
+    }
 }
 
-/// Time since `start` (1 ms ticks).
+/// Time since `start` (1 ms ticks). Callable from interrupt handlers.
 pub fn now() -> Instant {
-    // u64 is two words on a 32-bit core: read it with SysTick masked.
-    with_sched(|s| s.now())
+    if in_handler() {
+        // u64 is two words on a 32-bit core: read it with SysTick masked.
+        return with_sched(|s| s.now());
+    }
+    let (lo, hi) = svc::<{ Sys::Now as u8 }>(0, 0, 0, 0);
+    Instant::from_ticks((hi as u64) << 32 | lo as u64)
 }
 
 /// Sleeps until `deadline`; returns at once if it is now or in the past.
 pub fn sleep_until(deadline: Instant) {
-    if with_sched(|s| s.sleep_current(deadline)) {
-        yield_now(); // switch away now; we resume once `deadline` wakes us
-    }
+    let (lo, hi) = split(deadline.ticks());
+    svc::<{ Sys::SleepUntil as u8 }>(lo, hi, 0, 0);
 }
 
-/// Sleeps for `d`, rounded up to whole ticks. Compute the deadline in the same critical section as
-/// `sleep_current`, or a tick in between shortens the sleep.
+/// Sleeps for `d`, rounded up to whole ticks. The kernel adds `d` to the
+/// current tick itself, so a tick between asking and sleeping cannot shorten it.
 pub fn sleep(d: Duration) {
-    if with_sched(|s| s.sleep_current(s.now() + d)) {
-        yield_now();
-    }
+    let (lo, hi) = split(timeout_to_ticks(Some(d)));
+    svc::<{ Sys::Sleep as u8 }>(lo, hi, 0, 0);
 }
 
 /// SysTick exception (1 kHz): advance time; pend PendSV if `tick` says so.
@@ -124,8 +131,28 @@ extern "C" fn kernel_switch(sp: *mut u32) -> *mut u32 {
             }
         }
         let next = s.switch();
-        // PSPLIM takes the address as a plain u32; `next` is valid (just picked by `switch`).
         unsafe {
+            // A task resuming from a blocking syscall gets its result in r0.
+            let f = (*next).syscall_frame;
+            if !f.is_null() {
+                *f = if (*next).timed_out {
+                    Status::Timeout
+                } else {
+                    Status::Ok
+                } as u32;
+                (*next).syscall_frame = core::ptr::null_mut();
+            }
+            // Thread-mode privilege for the incoming task. Change only nPRIV
+            // (CONTROL also holds SPSEL and FPCA); PendSV's `bx lr` applies it.
+            let mut c = cortex_m::register::control::read();
+            c.set_npriv(if (*next).privileged {
+                cortex_m::register::control::Npriv::Privileged
+            } else {
+                cortex_m::register::control::Npriv::Unprivileged
+            });
+
+            cortex_m::register::control::write(c);
+            // PSPLIM takes the address as a plain u32; `next` is valid (just picked by `switch`).
             cortex_m::register::psplim::write((*next).stack_limit as u32);
             return (*next).sp;
         }

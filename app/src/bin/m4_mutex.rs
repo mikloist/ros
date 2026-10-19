@@ -59,13 +59,26 @@ fn checker() -> ! {
 
     GO_HOLD.give();
     HOLDING.take(None).unwrap();
-    assert!(COUNTER.lock(Some(Duration::ZERO)).is_err(), "try-lock got a held mutex");
+    assert!(
+        COUNTER.lock(Some(Duration::ZERO)).is_err(),
+        "try-lock got a held mutex"
+    );
     let t0 = kernel::now();
-    assert!(COUNTER.lock(Some(Duration::from_millis(5))).is_err(), "timed lock got a held mutex");
-    assert_eq!(kernel::now() - t0, Duration::from_millis(5), "timed lock did not last 5 ms");
+    assert!(
+        COUNTER.lock(Some(Duration::from_millis(5))).is_err(),
+        "timed lock got a held mutex"
+    );
+    assert_eq!(
+        kernel::now() - t0,
+        Duration::from_millis(5),
+        "timed lock did not last 5 ms"
+    );
     let got = COUNTER.lock(None);
     assert!(got.is_ok(), "untimed lock failed");
-    assert!(kernel::now() - t0 < HOLD + Duration::from_millis(2), "holder kept the mutex too long");
+    assert!(
+        kernel::now() - t0 < HOLD + Duration::from_millis(2),
+        "holder kept the mutex too long"
+    );
     defmt::info!("timeouts ok, lock handed over after the holder released it");
     app::exit_ok()
 }

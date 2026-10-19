@@ -26,7 +26,6 @@ impl Instant {
         self.0
     }
 
-    #[cfg(test)]
     pub(crate) const fn from_ticks(ticks: u64) -> Instant {
         Instant(ticks)
     }
@@ -35,6 +34,20 @@ impl Instant {
 /// A duration in whole ticks, rounded up: sleeping never ends early.
 fn to_ticks(d: Duration) -> u64 {
     u64::try_from(d.as_micros().div_ceil(1000)).unwrap_or(u64::MAX)
+}
+
+pub(crate) fn timeout_to_ticks(t: Option<Duration>) -> u64 {
+    match t {
+        Some(v) => to_ticks(v).clamp(0, u64::MAX - 1),
+        None => u64::MAX,
+    }
+}
+pub(crate) fn ticks_to_timeout(ticks: u64) -> Option<Duration> {
+    if ticks == u64::MAX {
+        None
+    } else {
+        Some(Duration::from_millis(ticks))
+    }
 }
 
 impl Add<Duration> for Instant {
@@ -362,6 +375,15 @@ impl Sched {
             }
         }
     }
+    pub(crate) fn kill_current(&mut self) {
+        unsafe {
+            assert!(
+                !self.current.is_null(),
+                "current must be something to kill it"
+            );
+            (*self.current).state = State::Dead;
+        }
+    }
 }
 
 /// Tasks blocked on one sync object, linked through `Task::wait_next`, most
@@ -420,6 +442,7 @@ impl Sched {
     unsafe fn set_priority(&mut self, t: *mut Task, p: u8) {
         unsafe {
             match (*t).state {
+                State::Dead => (*t).current_priority = p,
                 State::Running => (*t).current_priority = p,
                 State::Sleeping => (*t).current_priority = p,
                 State::Ready => {

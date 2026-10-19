@@ -24,8 +24,16 @@ fn producer() -> ! {
     }
     assert_eq!(Q.try_send(7), Err(7), "try_send on a full queue");
     let t0 = kernel::now();
-    assert_eq!(Q.send(8, Some(Duration::from_millis(3))), Err(8), "timed send on a full queue");
-    assert_eq!(kernel::now() - t0, Duration::from_millis(3), "timed send did not last 3 ticks");
+    assert_eq!(
+        Q.send(8, Some(Duration::from_millis(3))),
+        Err(8),
+        "timed send on a full queue"
+    );
+    assert_eq!(
+        kernel::now() - t0,
+        Duration::from_millis(3),
+        "timed send did not last 3 ticks"
+    );
     defmt::info!("full queue: try_send rejected, send timed out and returned the item");
     FILLED.give();
     loop {
@@ -46,8 +54,16 @@ fn consumer() -> ! {
         assert_eq!(Q.try_recv(), Ok(1000 + i));
     }
     let t0 = kernel::now();
-    assert_eq!(Q.recv(Some(Duration::from_millis(3))), Err(Timeout), "recv on an empty queue");
-    assert_eq!(kernel::now() - t0, Duration::from_millis(3), "timed recv did not last 3 ticks");
+    assert_eq!(
+        Q.recv(Some(Duration::from_millis(3))),
+        Err(Timeout),
+        "recv on an empty queue"
+    );
+    assert_eq!(
+        kernel::now() - t0,
+        Duration::from_millis(3),
+        "timed recv did not last 3 ticks"
+    );
     defmt::info!("empty queue: recv timed out");
     app::exit_ok()
 }
@@ -55,6 +71,9 @@ fn consumer() -> ! {
 #[app::entry]
 fn main() -> ! {
     let b = app::init();
-    let mut tasks = [Task::new("producer", 1, producer, &STACK_P), Task::new("consumer", 2, consumer, &STACK_C)];
+    let mut tasks = [
+        Task::new("producer", 1, producer, &STACK_P),
+        Task::new("consumer", 2, consumer, &STACK_C),
+    ];
     kernel::start(&mut tasks, b.sys_hz)
 }

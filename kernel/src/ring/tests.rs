@@ -8,7 +8,10 @@ fn fifo_order() {
     for i in 1..=3 {
         r.push(i).unwrap();
     }
-    assert_eq!([r.pop(), r.pop(), r.pop(), r.pop()], [Some(1), Some(2), Some(3), None]);
+    assert_eq!(
+        [r.pop(), r.pop(), r.pop(), r.pop()],
+        [Some(1), Some(2), Some(3), None]
+    );
 }
 
 #[test]

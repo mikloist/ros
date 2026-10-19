@@ -38,7 +38,11 @@ fn high() -> ! {
     for k in 1..=PERIODS {
         let before = SPIN_A.load(Relaxed) + SPIN_B.load(Relaxed);
         kernel::sleep_until(start + PERIOD * k);
-        assert_eq!(kernel::now(), start + PERIOD * k, "high task woke late: not preempting");
+        assert_eq!(
+            kernel::now(),
+            start + PERIOD * k,
+            "high task woke late: not preempting"
+        );
         let after = SPIN_A.load(Relaxed) + SPIN_B.load(Relaxed);
         assert!(after > before, "spinners did not run while high slept");
     }
@@ -50,9 +54,19 @@ fn high() -> ! {
     SPIN_B.store(0, Relaxed);
     kernel::sleep(SLICE_WINDOW);
     let (a, b) = (SPIN_A.load(Relaxed), SPIN_B.load(Relaxed));
-    defmt::info!("phase 2: spin_a={} spin_b={} over {} ms", a, b, SLICE_WINDOW.as_millis() as u32);
+    defmt::info!(
+        "phase 2: spin_a={} spin_b={} over {} ms",
+        a,
+        b,
+        SLICE_WINDOW.as_millis() as u32
+    );
     assert!(a > 0 && b > 0, "a spinner never ran: no time slicing");
-    assert!(a.min(b) * 2 > a.max(b), "round robin unfair: {} vs {}", a, b);
+    assert!(
+        a.min(b) * 2 > a.max(b),
+        "round robin unfair: {} vs {}",
+        a,
+        b
+    );
     app::exit_ok()
 }
 

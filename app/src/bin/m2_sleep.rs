@@ -15,7 +15,9 @@ static STACK: Stack<1024> = Stack::new();
 
 fn micros() -> u64 {
     // SAFETY: written once in `main` before the kernel starts; read-only afterwards.
-    unsafe { (*&raw const TIMER).unwrap() }.get_counter().ticks()
+    unsafe { (*&raw const TIMER).unwrap() }
+        .get_counter()
+        .ticks()
 }
 
 fn sleeper() -> ! {
@@ -28,20 +30,34 @@ fn sleeper() -> ! {
             // Wakes on tick now+ms, and "now" is somewhere inside the current tick.
             let lo = (ms as u64 - 1) * 1000;
             let hi = ms as u64 * 1000 + 100; // 100 us for SysTick -> PendSV -> task
-            assert!(dt >= lo && dt <= hi, "sleep({}) took {} us, want {}..={}", ms, dt, lo, hi);
+            assert!(
+                dt >= lo && dt <= hi,
+                "sleep({}) took {} us, want {}..={}",
+                ms,
+                dt,
+                lo,
+                hi
+            );
         }
     }
 
     let start = kernel::now();
     for k in 1..=10 {
         kernel::sleep_until(start + Duration::from_millis(20 * k));
-        assert_eq!(kernel::now(), start + Duration::from_millis(20 * k), "periodic wakeup drifted");
+        assert_eq!(
+            kernel::now(),
+            start + Duration::from_millis(20 * k),
+            "periodic wakeup drifted"
+        );
     }
     defmt::info!("sleep_until: 10 periods of 20 ticks, no drift");
 
     let n = kernel::now();
     kernel::sleep_until(n - Duration::from_millis(5));
-    assert!(kernel::now() - n <= Duration::from_millis(1), "sleep_until(past) blocked");
+    assert!(
+        kernel::now() - n <= Duration::from_millis(1),
+        "sleep_until(past) blocked"
+    );
 
     app::exit_ok()
 }

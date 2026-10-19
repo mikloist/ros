@@ -8,7 +8,8 @@ use embedded_hal::digital::StatefulOutputPin;
 use kernel::{Duration, Stack, Task};
 use rp235x_hal as hal;
 
-type Led = hal::gpio::Pin<hal::gpio::bank0::Gpio15, hal::gpio::FunctionSioOutput, hal::gpio::PullDown>;
+type Led =
+    hal::gpio::Pin<hal::gpio::bank0::Gpio15, hal::gpio::FunctionSioOutput, hal::gpio::PullDown>;
 
 /// Filled by `main` before `kernel::start`, taken once by `led`.
 static mut LED: Option<Led> = None;
@@ -20,7 +21,15 @@ fn led() -> ! {
     loop {
         kernel::sleep(Duration::from_millis(500));
         pin.toggle().unwrap();
-        defmt::info!("led {} at tick {}", if pin.is_set_high().unwrap() { "on " } else { "off" }, kernel::now().ticks());
+        defmt::info!(
+            "led {} at tick {}",
+            if pin.is_set_high().unwrap() {
+                "on "
+            } else {
+                "off"
+            },
+            kernel::now().ticks()
+        );
     }
 }
 

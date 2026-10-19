@@ -39,8 +39,17 @@ pub fn init() -> Board {
     .unwrap();
     let timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
     let sio = hal::Sio::new(pac.SIO);
-    let pins = hal::gpio::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
-    Board { pins, timer, sys_hz: clocks.system_clock.freq().to_Hz() }
+    let pins = hal::gpio::Pins::new(
+        pac.IO_BANK0,
+        pac.PADS_BANK0,
+        sio.gpio_bank0,
+        &mut pac.RESETS,
+    );
+    Board {
+        pins,
+        timer,
+        sys_hz: clocks.system_clock.freq().to_Hz(),
+    }
 }
 
 /// Any panic, in a task (privileged or not), the kernel or `main`, ends the

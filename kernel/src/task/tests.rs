@@ -17,7 +17,11 @@ fn software_frame_is_zeroed_regs_then_exc_return() {
     let mut s = [0xAAAA_AAAA; 64];
     let sp = init_stack(&mut s, ENTRY, EXIT);
     assert_eq!(&s[sp..sp + 8], &[0; 8], "r4-r11");
-    assert_eq!(s[sp + 8], 0xFFFF_FFFD, "EXC_RETURN: thread mode, PSP, no FP frame");
+    assert_eq!(
+        s[sp + 8],
+        0xFFFF_FFFD,
+        "EXC_RETURN: thread mode, PSP, no FP frame"
+    );
 }
 
 #[test]
@@ -26,7 +30,10 @@ fn hardware_frame_returns_into_entry() {
     let sp = init_stack(&mut s, ENTRY, EXIT);
     let hw = &s[sp + 9..];
     assert_eq!(&hw[..5], &[0; 5], "r0-r3, r12");
-    assert_eq!(hw[5], EXIT, "lr: returning from entry lands in the exit trap");
+    assert_eq!(
+        hw[5], EXIT,
+        "lr: returning from entry lands in the exit trap"
+    );
     assert_eq!(hw[6], ENTRY & !1, "pc: entry with Thumb bit cleared");
     assert_eq!(hw[7], 0x0100_0000, "xPSR: only the Thumb bit");
 }
@@ -39,8 +46,15 @@ fn task_limit_is_stack_bottom_and_sp_is_frame_start() {
     let t = Task::new("t", 1, never, &STACK);
     let base = STACK.stack.get() as *mut u32;
     // PSPLIM is the lowest legal address: the stack grows down toward it.
-    assert_eq!(t.stack_limit, base, "stack_limit must be the bottom, not the top");
-    assert_eq!(t.sp, base.wrapping_add(64 - FRAME_WORDS), "sp must point at the frame start");
+    assert_eq!(
+        t.stack_limit, base,
+        "stack_limit must be the bottom, not the top"
+    );
+    assert_eq!(
+        t.sp,
+        base.wrapping_add(64 - FRAME_WORDS),
+        "sp must point at the frame start"
+    );
 }
 
 fn never() -> ! {
