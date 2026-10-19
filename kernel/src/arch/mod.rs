@@ -1,11 +1,12 @@
 //! Cortex-M33 glue: PendSV context switch, SysTick, critical sections, and the
 //! public task API. All scheduling decisions live in `sched.rs`.
 
+mod fault;
 pub(crate) mod svc;
 
 use core::arch::global_asm;
 
-use cortex_m::peripheral::scb::SystemHandler;
+use cortex_m::peripheral::scb::{Exception, SystemHandler};
 use cortex_m::peripheral::syst::SystClkSource;
 
 use core::time::Duration;
@@ -64,6 +65,11 @@ pub fn start(tasks: &mut [Task], sys_freq: u32) -> ! {
         // PendSV lowest so a switch never interrupts a handler; SysTick above it.
         p.SCB.set_priority(SystemHandler::PendSV, 0xFF);
         p.SCB.set_priority(SystemHandler::SysTick, 0x80);
+        // Task faults get their own handlers (kill the task); disabled, they
+        // would all escalate to HardFault and stop the system.
+        p.SCB.enable(Exception::MemoryManagement);
+        p.SCB.enable(Exception::BusFault);
+        p.SCB.enable(Exception::UsageFault);
         // SysTick counts core cycles: reload N-1 for an N-cycle (1 ms) period.
         p.SYST.set_clock_source(SystClkSource::Core);
         p.SYST.set_reload(sys_freq / 1000 - 1);

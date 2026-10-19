@@ -91,6 +91,46 @@ pub(crate) fn in_handler() -> bool {
     ipsr != 0
 }
 
+use critical_section::RawRestoreState;
+
+/// Critical sections for everyone, `defmt` and the HAL included.
+/// - Unprivileged task: `cpsid` is ignored there, so ask the kernel to raise
+///   BASEPRI (masks SysTick and PendSV). State = 0x100 | old BASEPRI.
+/// - Privileged code (handlers, `main`, idle, test tasks): mask interrupts
+///   with PRIMASK. State = 1 if they were enabled before, else 0.
+struct MyCriticalSection;
+critical_section::set_impl!(MyCriticalSection);
+
+/// Bit 8 of the restore state: this section was entered through `CsEnter`.
+const VIA_SVC: u32 = 0x100;
+
+fn unprivileged_task() -> bool {
+    use cortex_m::register::control::{self, Npriv};
+    !in_handler() && control::read().npriv() == Npriv::Unprivileged
+}
+
+unsafe impl critical_section::Impl for MyCriticalSection {
+    unsafe fn acquire() -> RawRestoreState {
+        if unprivileged_task() {
+            let (old, _) = svc::<{ Sys::CsEnter as u8 }>(0, 0, 0, 0);
+            return VIA_SVC | old;
+        }
+        // cortex-m's `Active` means exceptions are active, i.e. not masked.
+        let was_enabled = cortex_m::register::primask::read().is_active();
+        cortex_m::interrupt::disable();
+        was_enabled as u32
+    }
+
+    unsafe fn release(state: RawRestoreState) {
+        if state & VIA_SVC != 0 {
+            svc::<{ Sys::CsExit as u8 }>(state & 0xFF, 0, 0, 0);
+        } else if state == 1 {
+            // Only re-enable if they were on before: nested sections stay masked.
+            unsafe { cortex_m::interrupt::enable() };
+        }
+    }
+}
+
 global_asm!(
     ".section .text.SVCall,\"ax\",%progbits",
     ".global SVCall", // cortex-m-rt's vector table links to this name
