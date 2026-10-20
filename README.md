@@ -43,7 +43,7 @@ Single core (core 0), Arm Cortex-M33, no heap. Board bring-up is borrowed (`cort
     - Tasks are unprivileged; touching core peripherals (SysTick, NVIC, SCB) faults
     - A fault in a task (bad access, stack overflow, undefined instruction) kills only that task; a fault in the kernel or an interrupt handler halts
     - Critical sections work for unprivileged tasks too (the kernel raises BASEPRI for them), so `defmt` logging is safe from any task
-- Planned: MPU isolation (M6), a RISC-V build for the RP2350's Hazard3 cores (M7), multicore (M8), then Wi-Fi via the CYW43 chip (Arm only)
+- Planned: MPU isolation (M6), multicore (M7), a RISC-V build for the RP2350's Hazard3 cores (M8), then Wi-Fi via the CYW43 chip (Arm only)
 
 # Layout
 - `kernel/`: the RTOS (`no_std` lib). `task.rs`, `sched.rs`, `collections/` (task lists, ring buffer) are host-testable; `arch/` and `sync/` (one file each for semaphore, queue, mutex) are Cortex-M33 only
