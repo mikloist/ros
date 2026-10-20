@@ -7,13 +7,13 @@ Learning project: write a preemptive RTOS kernel in Rust for the RP2350 (Pico 2 
 | Topic | Choice |
 |---|---|
 | Depth | Kernel from scratch; borrow platform (`cortex-m-rt`, `rp235x-hal`). Embassy removed. |
-| Cores | Arm Cortex-M33 (`thumbv8m.main-none-eabihf`), Secure state, no TrustZone setup. |
-| SMP | Core 0 only through M6. Critical sections behind one `arch` API so M7 (multicore) can swap them. |
+| Cores | Arm Cortex-M33 (`thumbv8m.main-none-eabihf`), Secure state, no TrustZone setup. M7 adds the RP2350's Hazard3 RISC-V cores (`riscv32imac-unknown-none-elf`) as a second build target. |
+| SMP | Core 0 only through M7. Critical sections behind one `arch` API so M8 (multicore) can swap them. |
 | v1 scope | Levels 1–4: context switch, preemptive priority scheduler, semaphore/mutex/queue, SVC + unprivileged tasks + MPU. |
 | Structure | FreeRTOS-style, static task table, shared address space, no heap. Scheduler handles `*mut Task` only, so runtime task creation (heap-backed) can be added later without rewriting it. |
 | Debug I/O | `defmt` over RTT, `probe-rs run`. External LED on GP15 (onboard LED needs CYW43). |
 
-Out of scope for v1 (each gets its own spec): runtime task creation, second core (M7, after M6), CYW43 Wi-Fi (after M7), tickless idle.
+Out of scope for v1 (each gets its own spec): runtime task creation, Hazard3 RISC-V port (M7, after M6), second core (M8, after M7), CYW43 Wi-Fi (after M8, Arm only), tickless idle.
 
 ## 1. Layout and boot
 
@@ -155,4 +155,5 @@ Fault policy (M5): MemManage, BusFault and UsageFault are enabled with their own
 | M4 | Mutex + priority inheritance | Low/medium/high inversion: H waits 8 ms (L's critical section) instead of ~200 ms (mutant without inheritance: 201 ms, fails); two time-sliced tasks lose no updates (200/200); try-lock and timed lock fail on a held mutex |
 | M5 | SVC + unprivileged tasks, task kill | All M1–M4 tests pass with unprivileged tasks (IRQ→task latency 12 µs). `m5_fault`: a SysTick write (BusFault, CFSR `00008200`), a stack overflow (`00100000`) and an undefined instruction while holding a mutex (`00010000`) each kill only their task; SysTick unchanged, the innocent task ran 10 times in 10 ms, the dead task's mutex stays locked. Mutants: tasks left privileged, no r0 writeback, no-op kill each fail a test |
 | M6 | MPU | Bad pointer kills only the offending task; others keep running |
-| M7 | Multicore (own spec) | Tasks run on both cores; a `give()` on one core wakes a task on the other |
+| M7 | Hazard3 RISC-V port (own spec) | `arch/` splits into `arch/cortex_m33/` and `arch/hazard3/` behind the same interface; one `--target` flag picks the core. All board tests that don't touch Arm-only registers pass on Hazard3: context switch saves all registers in software, `ecall` syscalls, machine timer tick, PMP instead of MPU. Wi-Fi not required on RISC-V |
+| M8 | Multicore (own spec) | Tasks run on both cores; a `give()` on one core wakes a task on the other |
