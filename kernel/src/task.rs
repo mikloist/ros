@@ -1,5 +1,7 @@
 use core::cell::UnsafeCell;
 
+use crate::region::{PERIPHERAL_REGIONS, Region};
+
 use crate::sched::{Instant, MutexCore, PRIOS, WaitList};
 
 #[repr(C, align(32))] // 8-byte aligned frames (AAPCS); 32 for the MPU in M6
@@ -13,6 +15,13 @@ unsafe impl<const N: usize> Sync for Stack<N> {}
 
 impl<const N: usize> Stack<N> {
     pub const fn new() -> Self {
+        const {
+            assert!(
+                N % 8 == 0,
+                "stack size must be a multiple of 8 words (32 bytes, MPU granule)"
+            )
+        };
+        const { assert!(N >= 64, "stack must be at least 64 words") };
         return Self {
             stack: UnsafeCell::new([0; N]),
         };
@@ -30,6 +39,7 @@ pub(crate) enum State {
 
 pub struct Task {
     pub(crate) sp: *mut u32,
+    pub(crate) stack_end: *mut u32,
     pub(crate) stack_limit: *mut u32,
     pub(crate) state: State,
     pub(crate) next: *mut Task,
@@ -45,6 +55,7 @@ pub struct Task {
     pub(crate) blocked_mutex: *mut MutexCore,
     pub(crate) privileged: bool,
     pub(crate) syscall_frame: *mut u32,
+    pub(crate) peripherals: [Region; PERIPHERAL_REGIONS],
 }
 
 fn task_exit() -> ! {
@@ -93,6 +104,7 @@ impl Task {
             Self {
                 sp: base.add(start),
                 stack_limit: base,
+                stack_end: base.add(N),
                 state: State::Ready,
                 next: core::ptr::null_mut(),
                 name: name,
@@ -107,8 +119,21 @@ impl Task {
                 blocked_mutex: core::ptr::null_mut(),
                 privileged: false,
                 syscall_frame: core::ptr::null_mut(),
+                peripherals: [Region::DISABLED; PERIPHERAL_REGIONS],
             }
         }
+    }
+
+    pub fn with_peripheral(mut self, base: usize, len: usize) -> Task {
+        let i = self.peripherals.iter().position(|r| *r == Region::DISABLED);
+        let slot = i.expect("a task can be granted at most 5 peripheral ranges");
+        self.peripherals[slot] = Region::device(base, len);
+        self
+    }
+
+    pub(crate) fn stack_contains(&self, p: usize, len: usize) -> bool {
+        let (lo, hi) = (self.stack_limit as usize, self.stack_end as usize);
+        p >= lo && p.checked_add(len).is_some_and(|end| end <= hi)
     }
     /// Board tests only: like `new`, but the task runs privileged (it may
     /// touch core peripherals such as the NVIC or SysTick).
