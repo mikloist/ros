@@ -15,7 +15,9 @@ mod arch;
 #[cfg(target_arch = "arm")]
 mod sync;
 #[cfg(target_arch = "arm")]
-pub use arch::{now, sleep, sleep_until, start, yield_now};
+pub use arch::{now, sleep, sleep_until, start, start_secondary, yield_now};
+#[cfg(all(target_arch = "arm", feature = "test-hooks"))]
+pub use arch::exit;
 #[cfg(target_arch = "arm")]
 pub use sync::{Mutex, MutexGuard, Queue, Semaphore, Timeout};
 #[cfg(target_arch = "arm")]

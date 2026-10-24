@@ -169,6 +169,7 @@ impl Task {
             blocked_mutex: core::ptr::null_mut(),
             privileged: false,
             syscall_frame: core::ptr::null_mut(),
+            on_cpu: false,
             stack_end: core::ptr::null_mut(),
             peripherals: [Region::DISABLED; PERIPHERAL_REGIONS],
             next: core::ptr::null_mut(),

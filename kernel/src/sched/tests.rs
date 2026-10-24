@@ -32,7 +32,7 @@ fn sched_with(prios: &[u8]) -> (Sched, *mut Task, Vec<*mut Task>, Tasks) {
         for &t in &ts {
             s.make_ready(t);
         }
-        s.make_ready(idle);
+        s.set_idle(0, idle);
     }
     let mut all = ts.clone();
     all.push(idle);
@@ -540,4 +540,105 @@ fn killed_owner_leaves_its_mutex_locked() {
         "lock on a dead task's mutex must time out"
     );
     assert_eq!(m.owner(), t[0], "mutex stays locked");
+}
+
+// ---- M7: two cores ----
+
+/// Like `sched_with`, plus an idle task for core 1. Returns
+/// (sched, [idle0, idle1], tasks, owner).
+fn smp_with(prios: &[u8]) -> (Sched, [*mut Task; 2], Vec<*mut Task>, Tasks) {
+    let (mut s, idle0, t, mut own) = sched_with(prios);
+    let idle1 = Box::into_raw(Box::new(Task::for_test(0)));
+    unsafe { s.set_idle(1, idle1) };
+    own.0.push(idle1);
+    (s, [idle0, idle1], t, own)
+}
+
+/// Runs `switch` on `core`.
+fn switch_on(s: &mut Sched, core: usize) -> *mut Task {
+    s.set_core(core);
+    s.switch()
+}
+
+#[test]
+fn two_cores_run_the_two_most_urgent_tasks() {
+    let (mut s, _, t, _own) = smp_with(&[1, 3, 2]);
+    assert_eq!(switch_on(&mut s, 0), t[1]);
+    assert_eq!(switch_on(&mut s, 1), t[2], "core 1 gets the next most urgent, not the same task");
+}
+
+#[test]
+fn a_task_never_runs_on_both_cores() {
+    let (mut s, idle, t, _own) = smp_with(&[1]);
+    assert_eq!(switch_on(&mut s, 0), t[0]);
+    assert_eq!(switch_on(&mut s, 1), idle[1], "core 1 took the task core 0 is running");
+    // Core 0 time-slices: the task goes back on the ready list but core 0 is
+    // still in the middle of its own switch; core 1 still must not take it.
+    s.set_core(0);
+    assert!(!s.should_switch_on(1), "nothing runnable for core 1");
+}
+
+#[test]
+fn task_woken_before_its_switch_out_is_not_picked_by_the_other_core() {
+    // The classic SMP race: core 0's task sleeps (PendSV not run yet, its
+    // registers not saved), core 1 wakes it and switches. Core 1 must not run
+    // it from a stale stack pointer.
+    let (mut s, idle, t, _own) = smp_with(&[2, 1]);
+    assert_eq!(switch_on(&mut s, 0), t[0]);
+    assert_eq!(switch_on(&mut s, 1), t[1]);
+    s.set_core(0);
+    s.sleep_current(at(1));
+    s.set_core(1);
+    s.tick(); // t[0] is Ready again, but still on core 0
+    assert!(!s.should_switch_on(1), "core 1 would pick a task still on core 0");
+    assert_eq!(switch_on(&mut s, 1), t[1], "core 1 keeps its own task");
+    // Core 0's PendSV saves t[0] and may now pick it itself.
+    assert_eq!(switch_on(&mut s, 0), t[0]);
+    let _ = idle;
+}
+
+#[test]
+fn switched_out_task_becomes_runnable_for_the_other_core() {
+    let (mut s, idle, t, _own) = smp_with(&[2, 3]);
+    assert_eq!(switch_on(&mut s, 0), t[1]);
+    assert_eq!(switch_on(&mut s, 1), t[0]);
+    s.set_core(1);
+    s.sleep_current(at(1));
+    assert_eq!(switch_on(&mut s, 1), idle[1]);
+    s.set_core(0);
+    s.tick(); // t[0] wakes; nobody runs it; core 1 is idle
+    assert!(s.should_switch_on(1), "the idle core must be told to pick it up");
+    assert_eq!(switch_on(&mut s, 1), t[0]);
+}
+
+#[test]
+fn waking_a_task_more_urgent_than_the_other_cores_task_targets_that_core() {
+    let (mut s, _, t, _own) = smp_with(&[4, 1, 3]);
+    let mut wl = wait_list();
+    assert_eq!(switch_on(&mut s, 0), t[0]); // prio 4
+    assert_eq!(switch_on(&mut s, 1), t[2]); // prio 3
+    s.set_core(1);
+    unsafe { s.block_current(&mut *wl, None) }; // the prio-3 task waits
+    assert_eq!(switch_on(&mut s, 1), t[1]); // core 1 now runs prio 1
+    s.set_core(0);
+    unsafe { s.wake_one(&mut *wl) }; // core 0 (prio 4) gives
+    assert!(!s.should_switch(), "core 0's prio-4 task stays");
+    assert!(s.should_switch_on(1), "core 1 must preempt its prio-1 task");
+}
+
+#[test]
+fn each_core_falls_back_to_its_own_idle() {
+    let (mut s, idle, _, _own) = smp_with(&[]);
+    assert_eq!(switch_on(&mut s, 0), idle[0]);
+    assert_eq!(switch_on(&mut s, 1), idle[1]);
+    assert_eq!(switch_on(&mut s, 0), idle[0], "idle never moves to the other core");
+}
+
+#[test]
+fn equal_priority_does_not_preempt_the_other_core() {
+    let (mut s, _, t, _own) = smp_with(&[1, 1, 1]);
+    assert_eq!(switch_on(&mut s, 0), t[0]);
+    assert_eq!(switch_on(&mut s, 1), t[1]);
+    assert!(s.should_switch_on(1), "tick: core 1's time slice is up");
+    assert!(!s.should_preempt(1), "a peer of equal priority must wait for the tick, or the cores ring each other forever");
 }

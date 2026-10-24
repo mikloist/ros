@@ -21,6 +21,25 @@ pub struct Board {
     pub timer: hal::Timer<hal::timer::CopyableTimer0>,
     /// Core clock in Hz (150 MHz); `kernel::start` derives the 1 kHz tick from it.
     pub sys_hz: u32,
+    psm: hal::pac::PSM,
+    ppb: hal::pac::PPB,
+    fifo: hal::sio::SioFifo,
+}
+
+/// Core 1's own stack for exceptions (MSP). In `.stacks`, so no task's MPU
+/// regions cover it (shared RAM would let every task overwrite it).
+#[unsafe(link_section = ".stacks")]
+static CORE1_STACK: hal::multicore::Stack<1024> = hal::multicore::Stack::new();
+
+impl Board {
+    /// Starts core 1 in `kernel::start_secondary`: it waits for
+    /// `kernel::start` on core 0, then both cores run tasks. Call before
+    /// `kernel::start`; without it the kernel runs on core 0 alone.
+    pub fn start_core1(&mut self) {
+        let mut mc = hal::multicore::Multicore::new(&mut self.psm, &mut self.ppb, &mut self.fifo);
+        let stack = CORE1_STACK.take().expect("core 1 already started");
+        mc.cores()[1].spawn(stack, || kernel::start_secondary()).unwrap();
+    }
 }
 
 /// Clocks to 150 MHz, GPIO bank, TIMER0.
@@ -39,6 +58,7 @@ pub fn init() -> Board {
     .unwrap();
     let timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
     let sio = hal::Sio::new(pac.SIO);
+    let fifo = sio.fifo;
     let pins = hal::gpio::Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
@@ -49,6 +69,9 @@ pub fn init() -> Board {
         pins,
         timer,
         sys_hz: clocks.system_clock.freq().to_Hz(),
+        psm: pac.PSM,
+        ppb: pac.PPB,
+        fifo,
     }
 }
 
@@ -58,13 +81,11 @@ pub fn init() -> Board {
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     defmt::error!("{}", defmt::Display2Format(info));
-    cortex_m_semihosting::debug::exit(cortex_m_semihosting::debug::EXIT_FAILURE);
-    loop {}
+    kernel::exit(false)
 }
 
 /// End a test binary successfully: `probe-rs run` exits 0.
 pub fn exit_ok() -> ! {
     defmt::info!("TEST PASS");
-    cortex_m_semihosting::debug::exit(cortex_m_semihosting::debug::EXIT_SUCCESS);
-    unreachable!()
+    kernel::exit(true)
 }
