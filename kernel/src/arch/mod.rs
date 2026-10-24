@@ -2,6 +2,7 @@
 //! public task API. All scheduling decisions live in `sched.rs`.
 
 mod fault;
+mod mpu;
 pub(crate) mod svc;
 
 use core::arch::global_asm;
@@ -13,15 +14,58 @@ use core::time::Duration;
 
 use crate::arch::svc::{Status, Sys, in_handler, split, svc};
 use crate::sched::{Instant, Sched, timeout_to_ticks};
-use crate::task::{Stack, Task};
+use crate::task::Task;
 
 /// The one scheduler. Only touch it through `with_sched`.
+#[unsafe(link_section = ".kobj")]
 static mut SCHED: Sched = Sched::new();
 /// The kernel's idle task, created by `start`.
+#[unsafe(link_section = ".kobj")]
 static mut IDLE: Option<Task> = None;
-static IDLE_STACK: Stack<128> = Stack::new();
+
+crate::stack!(IDLE_STACK, 128);
+
 /// PSP target for the very first PendSV, which "saves" a non-task's registers.
+#[unsafe(link_section = ".kobj")]
 static mut DUMMY: [u32; 32] = [0; 32];
+
+// Section bounds from app/memory.x; only their addresses matter.
+unsafe extern "C" {
+    static __skobj: u8;
+    static __ekobj: u8;
+    static __sstacks: u8;
+    static __estacks: u8;
+}
+
+/// True if `len` bytes at `p` lie inside `.kobj`: `p` is a real kernel object,
+/// not something a task forged in memory it can write.
+pub(crate) fn in_kobj(p: usize, len: usize) -> bool {
+    let (lo, hi) = (&raw const __skobj as usize, &raw const __ekobj as usize);
+    p >= lo && p.checked_add(len).is_some_and(|end| end <= hi)
+}
+
+// `.kobj` has initial values (a semaphore's count, a queue's ops pointer) but
+// sits outside the `.data` range cortex-m-rt copies from flash. cortex-m-rt
+// calls `__pre_init` before it initializes RAM, so no Rust code or statics
+// may run here: copy `.kobj` word by word in plain assembly.
+global_asm!(
+    ".section .text.__pre_init,\"ax\",%progbits",
+    ".global __pre_init",
+    ".type __pre_init,%function",
+    ".thumb_func",
+    "__pre_init:",
+    "  ldr r0, =__skobj",  // destination: start of .kobj in RAM
+    "  ldr r1, =__ekobj",  // end of .kobj
+    "  ldr r2, =__sikobj", // source: its initial values in flash
+    "1:",
+    "  cmp r0, r1",
+    "  bhs 2f",           // done when dst >= end
+    "  ldr r3, [r2], #4", // load a word, advance src
+    "  str r3, [r0], #4", // store it, advance dst
+    "  b 1b",
+    "2:",
+    "  bx lr",
+);
 
 /// Runs `f` on the scheduler with interrupts masked (PRIMASK), so SysTick
 /// cannot touch it halfway through. Every access to `SCHED` goes through here.
@@ -48,6 +92,16 @@ pub fn start(tasks: &mut [Task], sys_freq: u32) -> ! {
     // pointers the scheduler keeps stay valid (and `start` never returns).
     let base = tasks.as_mut_ptr();
     let n = tasks.len();
+    // A stack outside `.stacks` lies inside the shared RAM region: two MPU
+    // regions would overlap, and every task could write that stack.
+    let (lo, hi) = (&raw const __sstacks as usize, &raw const __estacks as usize);
+    for t in tasks.iter() {
+        let (s, e) = (t.stack_limit as usize, t.stack_end as usize);
+        assert!(
+            s >= lo && e <= hi,
+            "task stack not in .stacks: declare it with kernel::stack!"
+        );
+    }
     // SAFETY: interrupts are not running kernel code yet (SysTick is off, no
     // PendSV pended); IDLE is written once here and only read via its pointer.
     let idle_task = unsafe { (*&raw mut IDLE).insert(Task::idle(idle, &IDLE_STACK)) as *mut Task };
@@ -70,6 +124,8 @@ pub fn start(tasks: &mut [Task], sys_freq: u32) -> ! {
         p.SCB.enable(Exception::MemoryManagement);
         p.SCB.enable(Exception::BusFault);
         p.SCB.enable(Exception::UsageFault);
+        // From here on, unprivileged code only sees its own regions.
+        mpu::init();
         // SysTick counts core cycles: reload N-1 for an N-cycle (1 ms) period.
         p.SYST.set_clock_source(SystClkSource::Core);
         p.SYST.set_reload(sys_freq / 1000 - 1);
@@ -158,6 +214,8 @@ extern "C" fn kernel_switch(sp: *mut u32) -> *mut u32 {
             });
 
             cortex_m::register::control::write(c);
+
+            mpu::load(&*next);
             // PSPLIM takes the address as a plain u32; `next` is valid (just picked by `switch`).
             cortex_m::register::psplim::write((*next).stack_limit as u32);
             return (*next).sp;

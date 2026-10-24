@@ -5,7 +5,7 @@ mod mutex;
 mod queue;
 mod semaphore;
 
-pub use mutex::{Mutex, MutexGuard};
+pub use mutex::{Mutex, MutexData, MutexGuard, RawMutex};
 pub(crate) use mutex::{mutex_lock, mutex_unlock};
 pub use queue::Queue;
 pub(crate) use queue::QueueOps;
