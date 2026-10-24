@@ -3,7 +3,7 @@
 
 use cortex_m::register::{basepri, psp, psplim};
 
-use super::{DUMMY, with_sched};
+use super::with_sched;
 
 /// Configurable Fault Status Register: which fault, and why.
 const CFSR: *mut u32 = 0xE000_ED28 as *mut u32;
@@ -48,14 +48,33 @@ fn fault(kind: &str) {
         CFSR.write_volatile(cfsr);
     }
     with_sched(|s| s.kill_current());
-    // PendSV (tail-chained right after this handler) saves the dead task's
-    // registers below PSP. After a stack overflow PSP sits at the limit, so
-    // those stores would fault again or land in memory below the stack.
-    // Point PSP at scratch space instead; PSPLIM goes to 0 first so the new
-    // PSP is never below the limit.
+    // Returning from this handler, the core unstacks a frame from PSP
+    // *before* it takes the pending PendSV, with the dead task's
+    // (unprivileged) rights. So PSP must point at a frame the task itself may
+    // read: inside its own stack. Start `PARK_ROOM` words above the limit, so
+    // PendSV's register saves below PSP stay in this stack even after an
+    // overflow, and fill in a clean frame whose pc is a harmless loop in
+    // flash (PendSV switches away before it ever runs).
     unsafe {
-        psplim::write(0);
-        psp::write((&raw mut DUMMY as *mut u32).add(32) as u32);
+        let frame = (*task).stack_limit.add(PARK_ROOM);
+        frame.write_bytes(0, PARK_FRAME);
+        frame.add(6).write(park as fn() -> ! as usize as u32 & !1); // pc
+        frame.add(7).write(0x0100_0000); // xPSR: Thumb bit
+        psplim::write((*task).stack_limit as u32);
+        psp::write(frame as u32);
     }
     cortex_m::peripheral::SCB::set_pendsv();
+}
+
+/// Words left below the parked frame for PendSV's saves (r4-r11, EXC_RETURN,
+/// and s16-s31 if the task used the FPU: at most 25).
+const PARK_ROOM: usize = 32;
+/// Words of the parked frame: 8, or 26 with an FPU frame. Zero them all.
+const PARK_FRAME: usize = 26;
+
+/// Where a killed task would "resume" if PendSV did not switch it out first.
+fn park() -> ! {
+    loop {
+        cortex_m::asm::wfi();
+    }
 }

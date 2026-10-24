@@ -1,4 +1,4 @@
-use defmt::{error, info};
+use defmt::error;
 
 use crate::sched::{Instant, MutexCore, ticks_to_timeout};
 use crate::sync::{QueueOps, SemInner, mutex_lock, mutex_unlock, sem_give, sem_take};
@@ -144,6 +144,20 @@ global_asm!(
     "  b svc_dispatch", // tail-jump; r0 = frame pointer = first argument
 );
 
+/// The object pointer of a sync syscall must be a real kernel object: inside
+/// `.kobj` (which tasks cannot write), aligned, the whole object in range.
+/// Otherwise a task could hand the kernel a forged one, e.g. a fake queue
+/// whose `ops` pointer leads to the task's own code, run privileged.
+fn object_ok(p: u32, sys: Sys) -> bool {
+    let len = match sys {
+        Sys::SemTake | Sys::SemGive => core::mem::size_of::<SemInner>(),
+        Sys::MutexLock | Sys::MutexUnlock => core::mem::size_of::<MutexCore>(),
+        // Only the leading `ops` pointer; the queue's own ops use the rest.
+        _ => core::mem::size_of::<&QueueOps>(),
+    };
+    p % 4 == 0 && super::in_kobj(p as usize, len)
+}
+
 fn join(lo: u64, hi: u64) -> u64 {
     return hi << 32 | lo;
 }
@@ -183,7 +197,20 @@ unsafe extern "C" fn svc_dispatch(frame: *mut u32) {
                 return;
             }
 
-            match v.unwrap() {
+            let sys = v.unwrap();
+            match sys {
+                Sys::SemTake
+                | Sys::SemGive
+                | Sys::MutexLock
+                | Sys::MutexUnlock
+                | Sys::QueueSend
+                | Sys::QueueRecv
+                    if !object_ok(*frame.add(0), sys) =>
+                {
+                    // No `return`: `finish` below still pends PendSV.
+                    error!("task killed: bad kernel object {=u32:08x} in syscall #{}", *frame.add(0), n);
+                    s.kill_current();
+                }
                 Sys::Yield => {
                     cortex_m::peripheral::SCB::set_pendsv();
                     *frame.add(0) = Status::Ok as u32
@@ -229,7 +256,7 @@ unsafe extern "C" fn svc_dispatch(frame: *mut u32) {
                     // A queue starts with its `&'static QueueOps` (repr(C)).
                     let q = *frame.add(0) as *const ();
                     let ops = *(q as *const &'static QueueOps);
-                    let op = if v == Ok(Sys::QueueSend) {
+                    let op = if sys == Sys::QueueSend {
                         ops.send
                     } else {
                         ops.recv
@@ -237,7 +264,15 @@ unsafe extern "C" fn svc_dispatch(frame: *mut u32) {
                     let slot = *frame.add(1) as *mut ();
                     let timeout =
                         ticks_to_timeout(join(*frame.add(2) as u64, *frame.add(3) as u64));
-                    *frame.add(0) = op(s, q, slot, timeout) as u32;
+                    // The kernel writes the item into the slot: it must be the
+                    // caller's own stack, not another task's memory.
+                    let cur = s.current();
+                    if !(*cur).privileged && !(*cur).stack_contains(slot as usize, ops.slot_size) {
+                        error!("task killed: queue slot {=u32:08x} outside its stack", slot as u32);
+                        s.kill_current();
+                    } else {
+                        *frame.add(0) = op(s, q, slot, timeout) as u32;
+                    }
                 }
                 Sys::CsEnter => {
                     let current: u8 = cortex_m::register::basepri::read();

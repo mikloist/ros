@@ -14,6 +14,8 @@ use crate::sched::{Sched, WaitList, timeout_to_ticks};
 pub(crate) struct QueueOps {
     pub(crate) send: unsafe fn(&mut Sched, *const (), *mut (), Option<Duration>) -> Status,
     pub(crate) recv: unsafe fn(&mut Sched, *const (), *mut (), Option<Duration>) -> Status,
+    /// Size of the caller's slot (`Option<T>`), for the dispatcher's pointer check.
+    pub(crate) slot_size: usize,
 }
 
 /// `ops` first (`repr(C)`), so the dispatcher finds it without knowing `T`.
@@ -37,6 +39,7 @@ impl<T, const N: usize> Queue<T, N> {
     const OPS: QueueOps = QueueOps {
         send: Self::send_raw,
         recv: Self::recv_raw,
+        slot_size: core::mem::size_of::<Option<T>>(),
     };
 
     pub const fn new() -> Self {

@@ -25,10 +25,6 @@ static mut IDLE: Option<Task> = None;
 
 crate::stack!(IDLE_STACK, 128);
 
-/// PSP target for the very first PendSV, which "saves" a non-task's registers.
-#[unsafe(link_section = ".kobj")]
-static mut DUMMY: [u32; 32] = [0; 32];
-
 // Section bounds from app/memory.x; only their addresses matter.
 unsafe extern "C" {
     static __skobj: u8;
@@ -85,7 +81,8 @@ fn idle() -> ! {
 
 /// Makes every task (and the idle task) ready, sets PendSV to the lowest
 /// priority and SysTick above it, starts SysTick at 1 kHz from `sys_freq`,
-/// points PSP at `DUMMY`, and pends the first switch. Never returns.
+/// points PSP into the idle task's unused stack, and pends the first switch.
+/// Never returns.
 pub fn start(tasks: &mut [Task], sys_freq: u32) -> ! {
     assert!(!tasks.is_empty(), "start needs at least one task");
     // One base pointer for every task: `tasks` is never borrowed again, so the
@@ -132,7 +129,12 @@ pub fn start(tasks: &mut [Task], sys_freq: u32) -> ! {
         p.SYST.clear_current();
         p.SYST.enable_interrupt();
         p.SYST.enable_counter();
-        cortex_m::register::psp::write((&raw mut DUMMY as *mut u32).add(32) as u32);
+        // The first PendSV "saves" the registers of a task that doesn't exist
+        // (we are in `main`) below PSP. Point PSP at the idle task's initial
+        // frame: the save lands in idle's stack below that frame, space it
+        // has never used, because idle has not run yet. `kernel_switch`
+        // ignores the saved sp (no current task), and the frame stays intact.
+        cortex_m::register::psp::write((*idle_task).sp as u32);
     }
     yield_now();
     unreachable!()
