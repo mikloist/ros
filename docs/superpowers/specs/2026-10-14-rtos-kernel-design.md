@@ -27,7 +27,9 @@ ros/
 │     │  ├─ mod.rs     start, PendSV/kernel_switch, SysTick, with_sched, public time API
 │     │  ├─ svc.rs     Sys/Status, svc(), SVCall + svc_dispatch, from_handler, critical-section impl
 │     │  ├─ fault.rs   MemManage/BusFault/UsageFault: kill the task or halt
-│     │  └─ mpu.rs     (M6)
+│     │  └─ mpu.rs     MPU init (flash, shared RAM) and per-task load (stack, peripherals)
+│     ├─ region.rs     MPU region encoding (RBAR/RLAR), host-tested
+│     ├─ macros.rs     stack!, semaphore!, queue!, mutex!: place objects in their sections
 │     ├─ task.rs
 │     ├─ sched.rs
 │     ├─ collections/  allocation-free containers, host-tested
@@ -72,7 +74,7 @@ pub struct Task {
 }
 ```
 
-- App declares stacks as statics (`Stack<N>`, `#[repr(align(32))]`) and builds `Task::new(name, priority, entry: fn() -> !, &STACK)` values in `main` (priority 1..=7). `kernel::start(&mut [Task], sys_hz) -> !`; `sys_hz` comes from the HAL clocks (`app::Board.sys_hz`) so the kernel stays board-agnostic.
+- App declares stacks with `kernel::stack!(NAME, words)` (in `.stacks`; `Stack<N>` is `align(32)`, N a multiple of 8 and ≥ 64, checked at compile time) and builds `Task::new(name, priority, entry: fn() -> !, &STACK)` values in `main` (priority 1..=7), optionally `.with_peripheral(base, len)` (up to 5). `kernel::start(&mut [Task], sys_hz) -> !`; `sys_hz` comes from the HAL clocks (`app::Board.sys_hz`) so the kernel stays board-agnostic.
 - The kernel creates the idle task itself (`Task::idle`, priority 0, 128-word stack).
 - 8 priorities, higher = more urgent. Priority 0 reserved for the idle task; apps use 1–7. Ready set = `u8` bitmap + per-priority list; highest via CLZ.
 - All task lists are `TaskList<L: Link>` (`collections/list.rs`): intrusive, singly linked, head + tail, with `push_back`, `pop_front`, `insert_sorted`, `remove`. `L` picks the link field (`Next` for ready lists and the sleep list, `WaitNext` for wait lists), so the two kinds cannot be mixed up.
@@ -82,7 +84,7 @@ pub struct Task {
   3. Store `sp` to current task; call `sched::switch()`.
   4. Load next `sp`, `stack_limit` into PSP/PSPLIM, set CONTROL.nPRIV, (level 4) load MPU regions, pop, `bx` EXC_RETURN.
 - Initial frame: xPSR `0x0100_0000`, PC = entry, LR = trap that panics, EXC_RETURN `0xFFFF_FFFD`.
-- Start: make every task and idle ready, set PSP to a dummy area, pend PendSV. No special first-task path.
+- Start: make every task and idle ready, point PSP at the idle task's initial frame (the first PendSV's dummy save lands in idle's still-unused stack), pend PendSV. No special first-task path.
 - Stack overflow: PSPLIM → UsageFault (STKOF), which kills the task (section 5).
 
 ## 3. Scheduling and time
@@ -127,16 +129,24 @@ Syscalls:
 - `SVCall` (5 asm instructions) picks MSP/PSP from EXC_RETURN bit 2 and tail-jumps to `svc_dispatch(frame)`. The number comes from the `svc` instruction (stacked pc − 2), checked with `Sys::try_from`; an unknown number kills the task. One `with_sched` covers the call and `finish`; the result goes into stacked r0 (`Now` also r1).
 - Blocking: the kernel half returns `Status::Blocked`; `finish` stores the frame in `syscall_frame` and pends PendSV whenever the caller stopped running or `should_switch()`. `kernel_switch` writes `Ok`/`Timeout` (from `timed_out`) into that frame when the task is switched back in, so one syscall returns the final answer.
 - Interrupt handlers are privileged and must not `svc` (it would escalate to HardFault): `give`, `try_send`, `try_recv`, `now`, `yield_now` check IPSR (`in_handler`) and use `from_handler` / direct paths. Syscalls run at priority 0 and must stay short; slow work belongs in a task.
-- Generic queue: `Queue<T, N>` is `repr(C)` and starts with `&'static QueueOps` (send/recv compiled for its `T`); the dispatcher calls through it. Safe to call only once M6 checks that object pointers lie in `.kobj`.
+- Generic queue: `Queue<T, N>` is `repr(C)` and starts with `&'static QueueOps` (send/recv compiled for its `T`, plus `slot_size`); the dispatcher calls through it only after checking the queue lies in `.kobj`.
 - Tasks are unprivileged; `kernel_switch` sets CONTROL.nPRIV per task. Only the idle task and board-test tasks (`Task::new_privileged`, kernel feature `test-hooks`, enabled by `app`) run privileged.
 
-MPU (ARMv8-M PMSA, 8 regions, base/limit at 32-byte granularity, PRIVDEFENA = 1):
-- Per task: flash RX; own stack RW + XN; the `.shared` RW region (holds all task-shared data, including every `Mutex<T>`'s `T`); peripheral ranges listed in the task declaration (at most 5 regions remain for these).
-- Regions reloaded in PendSV on each switch.
-- Kernel objects (sync objects, wait lists, TCBs) live in `.kobj`, privileged-only. Syscalls validate pointers: object pointers must lie inside `.kobj`; buffer pointers must lie inside the caller's regions.
+MPU (ARMv8-M PMSA, 8 regions, base/limit at 32-byte granularity, PRIVDEFENA = 1, MAIR0: attr 0 normal, attr 1 Device-nGnRE):
 
-Fault policy (M5): MemManage, BusFault and UsageFault are enabled with their own handlers (`arch/fault.rs`).
-- Fault that interrupted a task (ICSR.RETTOBASE) other than idle: reset BASEPRI, log task name + kind + CFSR, clear CFSR, `kill_current` (`Dead`; `switch` never requeues it), move PSP to scratch (`DUMMY`, PSPLIM 0 first, so PendSV can save the dead task's registers even after a stack overflow), pend PendSV.
+| # | Region | Access | Set |
+|---|---|---|---|
+| 0 | flash | read-only, executable | `mpu::init` |
+| 1 | running task's stack | read/write, XN | `mpu::load` in `kernel_switch` |
+| 2 | shared RAM `[__sdata, __skobj)`: `.data`, `.bss`, `.uninit` (plain statics, defmt buffer, every `Mutex`'s data) | read/write, XN | `mpu::init` |
+| 3–7 | the task's granted peripherals | read/write, XN, device | `mpu::load` |
+
+- RAM layout (`app/memory.x`): shared RAM, then `.kobj` (kernel objects: scheduler, idle TCB, semaphores, queues, every `Mutex`'s lock state), then `.stacks`. No region covers `.kobj`, other tasks' stacks or the MSP stack: unprivileged access faults; the kernel reaches them through PRIVDEFENA. `.kobj` has initial values outside cortex-m-rt's `.data` copy, so the kernel's `__pre_init` (assembly) copies it from flash.
+- Objects are declared with `kernel::stack!`, `semaphore!`, `queue!`, `mutex!`. `Mutex<T>` is two `&'static`s: `RawMutex` in `.kobj`, `MutexData<T>` in shared RAM. `start` panics on a task stack outside `.stacks`.
+- Syscall pointer checks (the MPU does not see them: the kernel runs privileged): sync-object pointers must be aligned and lie wholly in `.kobj`; an unprivileged caller's queue slot must lie in its own stack (`slot_size` bytes). Otherwise the caller is logged and killed.
+
+Fault policy (M5, kill path changed in M6): MemManage, BusFault and UsageFault are enabled with their own handlers (`arch/fault.rs`).
+- Fault that interrupted a task (ICSR.RETTOBASE) other than idle: reset BASEPRI, log task name + kind + CFSR, clear CFSR, `kill_current` (`Dead`; `switch` never requeues it), pend PendSV. Before PendSV runs, the exception return reads a frame at PSP with the dead task's unprivileged rights, so PSP must point into its own stack: a zeroed 26-word frame 32 words above `stack_limit` (room for PendSV's saves even after an overflow), pc = a `wfi` loop, xPSR = Thumb. With PSP in kernel memory this read faulted forever (MUNSTKERR, CFSR `00000008`).
 - Fault in a handler, in `main` or in idle: panic (exit 1).
 - A killed task's mutexes stay locked; their waiters block until their timeout.
 - `app` has its own panic handler (defmt log + semihosting exit 1): panic-probe ends with `udf`, which would now only kill the panicking task, and it writes SHCSR, which faults when unprivileged.
@@ -154,6 +164,6 @@ Fault policy (M5): MemManage, BusFault and UsageFault are enabled with their own
 | M3 | Semaphore, queue, interrupt → task | TIMER0 alarm IRQ `give()`s to a task (worst wakeup latency 11–12 µs; a timer replaces the planned GPIO button so the test runs unattended); producer/consumer over a 4-slot queue incl. full/empty timeouts |
 | M4 | Mutex + priority inheritance | Low/medium/high inversion: H waits 8 ms (L's critical section) instead of ~200 ms (mutant without inheritance: 201 ms, fails); two time-sliced tasks lose no updates (200/200); try-lock and timed lock fail on a held mutex |
 | M5 | SVC + unprivileged tasks, task kill | All M1–M4 tests pass with unprivileged tasks (IRQ→task latency 12 µs). `m5_fault`: a SysTick write (BusFault, CFSR `00008200`), a stack overflow (`00100000`) and an undefined instruction while holding a mutex (`00010000`) each kill only their task; SysTick unchanged, the innocent task ran 10 times in 10 ms, the dead task's mutex stays locked. Mutants: tasks left privileged, no r0 writeback, no-op kill each fail a test |
-| M6 | MPU | Bad pointer kills only the offending task; others keep running |
+| M6 | MPU | `m6_mpu`: reading another task's stack, a semaphore in `.kobj` and an ungranted peripheral each kill the task (MemManage, CFSR `00000082`), executing RAM too (`00000001`), a forged semaphore is refused by the syscall; a granted task reads SIO, the innocent task keeps running (10 times in 10 ms). All M1–M5 tests pass (IRQ→task latency 14 µs). Mutants: MPU off, object check off, region limit off by one block each fail a test |
 | M7 | Multicore (own spec) | Tasks run on both cores; a `give()` on one core wakes a task on the other |
 | M8 | Hazard3 RISC-V port (own spec) | `arch/` splits into `arch/cortex_m33/` and `arch/hazard3/` behind the same interface; one `--target` flag picks the core. All board tests that don't touch Arm-only registers pass on Hazard3, multicore included: context switch saves all registers in software, `ecall` syscalls, machine timer tick, PMP instead of MPU. Wi-Fi not required on RISC-V |
